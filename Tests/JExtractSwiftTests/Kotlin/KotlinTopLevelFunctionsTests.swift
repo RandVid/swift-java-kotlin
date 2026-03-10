@@ -21,8 +21,8 @@ struct KotlinTopLevelFunctionsTests {
       .java,
       expectedChunks: [
         """
-        fun acceptInt(x: Int): Unit {
-          TODO("Generated Kotlin stub for Swift function: acceptInt")
+        fun acceptInt(x: Long): Unit {
+          SwiftModule.acceptInt(x)
         }
         """
       ]
@@ -39,7 +39,7 @@ struct KotlinTopLevelFunctionsTests {
       expectedChunks: [
         """
         fun acceptInt32(x: Int): Unit {
-          TODO("Generated Kotlin stub for Swift function: acceptInt32")
+          SwiftModule.acceptInt32(x)
         }
         """
       ]
@@ -55,8 +55,8 @@ struct KotlinTopLevelFunctionsTests {
       .java,
       expectedChunks: [
         """
-        fun returnInt(): Int {
-          TODO("Generated Kotlin stub for Swift function: returnInt")
+        fun returnInt(): Long {
+          return SwiftModule.returnInt()
         }
         """
       ]
@@ -73,7 +73,7 @@ struct KotlinTopLevelFunctionsTests {
       expectedChunks: [
         """
         fun returnInt32(): Int {
-          TODO("Generated Kotlin stub for Swift function: returnInt32")
+          return SwiftModule.returnInt32()
         }
         """
       ]
@@ -89,8 +89,8 @@ struct KotlinTopLevelFunctionsTests {
       .java,
       expectedChunks: [
         """
-        fun incrementInt(x: Int): Int {
-          TODO("Generated Kotlin stub for Swift function: incrementInt")
+        fun incrementInt(x: Long): Long {
+          return SwiftModule.incrementInt(x)
         }
         """
       ]
@@ -107,7 +107,7 @@ struct KotlinTopLevelFunctionsTests {
       expectedChunks: [
         """
         fun incrementInt32(x: Int): Int {
-          TODO("Generated Kotlin stub for Swift function: incrementInt32")
+          return SwiftModule.incrementInt32(x)
         }
         """
       ]
@@ -123,8 +123,8 @@ struct KotlinTopLevelFunctionsTests {
       .java,
       expectedChunks: [
         """
-        fun addInts(a: Int, b: Int, c: Int): Int {
-          TODO("Generated Kotlin stub for Swift function: addInts")
+        fun addInts(a: Long, b: Long, c: Long): Long {
+          return SwiftModule.addInts(a, b, c)
         }
         """
       ]
@@ -140,8 +140,8 @@ struct KotlinTopLevelFunctionsTests {
       .java,
       expectedChunks: [
         """
-        fun addMixed(a: Int, b: Int): Int {
-          TODO("Generated Kotlin stub for Swift function: addMixed")
+        fun addMixed(a: Int, b: Long): Int {
+          return SwiftModule.addMixed(a, b)
         }
         """
       ]
@@ -160,7 +160,7 @@ struct KotlinTopLevelFunctionsTests {
       expectedChunks: [
         """
         fun acceptBool(x: Boolean): Unit {
-          TODO("Generated Kotlin stub for Swift function: acceptBool")
+          SwiftModule.acceptBool(x)
         }
         """
       ]
@@ -177,7 +177,7 @@ struct KotlinTopLevelFunctionsTests {
       expectedChunks: [
         """
         fun returnBool(): Boolean {
-          TODO("Generated Kotlin stub for Swift function: returnBool")
+          return SwiftModule.returnBool()
         }
         """
       ]
@@ -194,7 +194,7 @@ struct KotlinTopLevelFunctionsTests {
       expectedChunks: [
         """
         fun negateBool(x: Boolean): Boolean {
-          TODO("Generated Kotlin stub for Swift function: negateBool")
+          return SwiftModule.negateBool(x)
         }
         """
       ]
@@ -211,7 +211,7 @@ struct KotlinTopLevelFunctionsTests {
       expectedChunks: [
         """
         fun andBools(a: Boolean, b: Boolean, c: Boolean): Boolean {
-          TODO("Generated Kotlin stub for Swift function: andBools")
+          return SwiftModule.andBools(a, b, c)
         }
         """
       ]
@@ -230,7 +230,7 @@ struct KotlinTopLevelFunctionsTests {
       expectedChunks: [
         """
         fun acceptDouble(x: Double): Unit {
-          TODO("Generated Kotlin stub for Swift function: acceptDouble")
+          SwiftModule.acceptDouble(x)
         }
         """
       ]
@@ -247,7 +247,7 @@ struct KotlinTopLevelFunctionsTests {
       expectedChunks: [
         """
         fun returnDouble(): Double {
-          TODO("Generated Kotlin stub for Swift function: returnDouble")
+          return SwiftModule.returnDouble()
         }
         """
       ]
@@ -264,7 +264,7 @@ struct KotlinTopLevelFunctionsTests {
       expectedChunks: [
         """
         fun doubleIt(x: Double): Double {
-          TODO("Generated Kotlin stub for Swift function: doubleIt")
+          return SwiftModule.doubleIt(x)
         }
         """
       ]
@@ -281,7 +281,7 @@ struct KotlinTopLevelFunctionsTests {
       expectedChunks: [
         """
         fun multiplyDoubles(a: Double, b: Double, c: Double): Double {
-          TODO("Generated Kotlin stub for Swift function: multiplyDoubles")
+          return SwiftModule.multiplyDoubles(a, b, c)
         }
         """
       ]
@@ -300,7 +300,7 @@ struct KotlinTopLevelFunctionsTests {
       expectedChunks: [
         """
         fun acceptString(s: String): Unit {
-          TODO("Generated Kotlin stub for Swift function: acceptString")
+          SwiftModule.acceptString(s)
         }
         """
       ]
@@ -316,9 +316,7 @@ struct KotlinTopLevelFunctionsTests {
       .java,
       expectedChunks: [
         """
-        fun returnString(): String {
-          TODO("Generated Kotlin stub for Swift function: returnString")
-        }
+        // Skipped returnString: String return type not supported in FFM mode
         """
       ]
     )
@@ -333,9 +331,7 @@ struct KotlinTopLevelFunctionsTests {
       .java,
       expectedChunks: [
         """
-        fun echoString(s: String): String {
-          TODO("Generated Kotlin stub for Swift function: echoString")
-        }
+        // Skipped echoString: String return type not supported in FFM mode
         """
       ]
     )
@@ -350,9 +346,7 @@ struct KotlinTopLevelFunctionsTests {
       .java,
       expectedChunks: [
         """
-        fun concatStrings(a: String, b: String, c: String): String {
-          TODO("Generated Kotlin stub for Swift function: concatStrings")
-        }
+        // Skipped concatStrings: String return type not supported in FFM mode
         """
       ]
     )
@@ -370,7 +364,7 @@ struct KotlinTopLevelFunctionsTests {
       expectedChunks: [
         """
         fun empty(): Unit {
-          TODO("Generated Kotlin stub for Swift function: empty")
+          SwiftModule.empty()
         }
         """
       ]
@@ -387,7 +381,7 @@ struct KotlinTopLevelFunctionsTests {
       expectedChunks: [
         """
         fun logString(s: String): Unit {
-          TODO("Generated Kotlin stub for Swift function: logString")
+          SwiftModule.logString(s)
         }
         """
       ]
@@ -403,8 +397,8 @@ struct KotlinTopLevelFunctionsTests {
       .java,
       expectedChunks: [
         """
-        fun logMultiple(a: Int, b: String, c: Boolean): Unit {
-          TODO("Generated Kotlin stub for Swift function: logMultiple")
+        fun logMultiple(a: Long, b: String, c: Boolean): Unit {
+          SwiftModule.logMultiple(a, b, c)
         }
         """
       ]
@@ -422,8 +416,8 @@ struct KotlinTopLevelFunctionsTests {
       .java,
       expectedChunks: [
         """
-        fun compare(a: Int, b: Int): Boolean {
-          TODO("Generated Kotlin stub for Swift function: compare")
+        fun compare(a: Long, b: Long): Boolean {
+          return SwiftModule.compare(a, b)
         }
         """
       ]
@@ -439,8 +433,8 @@ struct KotlinTopLevelFunctionsTests {
       .java,
       expectedChunks: [
         """
-        fun stringLength(s: String): Int {
-          TODO("Generated Kotlin stub for Swift function: stringLength")
+        fun stringLength(s: String): Long {
+          return SwiftModule.stringLength(s)
         }
         """
       ]
@@ -456,9 +450,7 @@ struct KotlinTopLevelFunctionsTests {
       .java,
       expectedChunks: [
         """
-        fun boolToString(b: Boolean): String {
-          TODO("Generated Kotlin stub for Swift function: boolToString")
-        }
+        // Skipped boolToString: String return type not supported in FFM mode
         """
       ]
     )
@@ -473,8 +465,8 @@ struct KotlinTopLevelFunctionsTests {
       .java,
       expectedChunks: [
         """
-        fun roundDouble(x: Double): Int {
-          TODO("Generated Kotlin stub for Swift function: roundDouble")
+        fun roundDouble(x: Double): Long {
+          return SwiftModule.roundDouble(x)
         }
         """
       ]
@@ -490,8 +482,8 @@ struct KotlinTopLevelFunctionsTests {
       .java,
       expectedChunks: [
         """
-        fun intToDouble(x: Int): Double {
-          TODO("Generated Kotlin stub for Swift function: intToDouble")
+        fun intToDouble(x: Long): Double {
+          return SwiftModule.intToDouble(x)
         }
         """
       ]
@@ -507,8 +499,8 @@ struct KotlinTopLevelFunctionsTests {
       .java,
       expectedChunks: [
         """
-        fun acceptAll(i: Int, b: Boolean, d: Double, s: String): Unit {
-          TODO("Generated Kotlin stub for Swift function: acceptAll")
+        fun acceptAll(i: Long, b: Boolean, d: Double, s: String): Unit {
+          SwiftModule.acceptAll(i, b, d, s)
         }
         """
       ]
@@ -524,8 +516,8 @@ struct KotlinTopLevelFunctionsTests {
       .java,
       expectedChunks: [
         """
-        fun complexFunc(x: Double, flag: Boolean, count: Int, label: String): Int {
-          TODO("Generated Kotlin stub for Swift function: complexFunc")
+        fun complexFunc(x: Double, flag: Boolean, count: Int, label: String): Long {
+          return SwiftModule.complexFunc(x, flag, count, label)
         }
         """
       ]
@@ -541,8 +533,8 @@ struct KotlinTopLevelFunctionsTests {
       .java,
       expectedChunks: [
         """
-        fun scale(value: Double, factor: Int): Double {
-          TODO("Generated Kotlin stub for Swift function: scale")
+        fun scale(value: Double, factor: Long): Double {
+          return SwiftModule.scale(value, factor)
         }
         """
       ]
@@ -614,7 +606,7 @@ struct KotlinTopLevelFunctionsTests {
   @Test
   func unsupported_mixedValidAndInvalid() throws {
     let source = """
-      public func validFunc(_ x: Int) -> String { "test" }
+      public func validFunc(_ x: Int) -> Double { 42.0 }
       public func invalidFunc(_ arr: [Int]) -> Int { 0 }
       """
     try assertOutput(
@@ -623,8 +615,8 @@ struct KotlinTopLevelFunctionsTests {
       .java,
       expectedChunks: [
         """
-        fun validFunc(x: Int): String {
-          TODO("Generated Kotlin stub for Swift function: validFunc")
+        fun validFunc(x: Long): Double {
+          return SwiftModule.validFunc(x)
         }
         """,
         """
