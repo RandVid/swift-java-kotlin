@@ -97,8 +97,42 @@ This mode is more limited in some performance and flexibility that it can offer,
 We recommend this mode when FFM is not available, or wide ranging deployment compatibility is your priority. When performance is paramaunt, we recommend the FFM mode instead.
 
 Required language/runtime versions:
-- **Swift 6.2**, because of dependence on rich swift interface files  
-- **Java 7+**, including 
+- **Swift 6.2**, because of dependence on rich swift interface files
+- **Java 7+**, including
+
+## swift-java jextract --mode=kotlin
+
+This mode generates Kotlin wrapper code that delegates to the existing Java FFM bindings, providing a Kotlin-idiomatic API for calling Swift code.
+
+The Kotlin generator supports primitive types (Int/Int32, Bool, Double, String, Void) and generates delegation code that calls the Java FFM classes. This provides immediate executable code without requiring JNI or direct FFM implementation in Kotlin.
+
+**Example usage**:
+```bash
+swift run swift-java jextract \
+  --swift-module MyModule \
+  --input-swift path/to/swift/sources \
+  --output-swift path/to/generated/swift \
+  --output-java path/to/generated/kotlin \
+  --java-package com.example.mymodule \
+  --mode kotlin
+```
+
+**Generated code**:
+```kotlin
+// Generated Kotlin wrapper
+fun add(a: Long, b: Long): Long {
+  return MyModule.add(a, b)  // delegates to Java FFM class
+}
+```
+
+**Architecture**: Kotlin → Java FFM → Swift (delegation pattern)
+
+Required language/runtime versions:
+- **Swift 6.2**, because of dependence on rich swift interface files
+- **JDK 25+**, since it delegates to Java FFM bindings
+- **Kotlin 1.9+**
+
+**See [DESIGN.md](DESIGN.md) for detailed design decisions, implementation details, trade-offs, and future roadmap.** 
 
 
 ## Development and Testing
