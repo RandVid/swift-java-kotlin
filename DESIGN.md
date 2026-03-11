@@ -54,9 +54,9 @@ swift test
 
 **Run Kotlin sample app**:
 ```bash
-cd Samples/KotlinFFMSampleApp
-./gradlew test  # runs Kotlin integration tests
-./gradlew run   # runs demo application
+# From project root
+./gradlew :Samples:KotlinFFMSampleApp:test  # runs Kotlin integration tests
+./gradlew :Samples:KotlinFFMSampleApp:run   # runs demo application
 ```
 
 **Generate Kotlin code from Swift source** (manual invocation):
@@ -224,23 +224,28 @@ case .string, .optional:
 
 **Impact**: Functions like `greet(name: String) -> String` cannot be generated.
 
-### 3. **No Function Overload Disambiguation**
+### 3. **No Argument Label Disambiguation**
 
-**Issue**: Swift supports function overloading by argument labels, but the current implementation uses only `ImportedFunc.name` (the base name without labels).
+**Issue**: Swift functions with same parameter types but different labels collide in Kotlin.
 
 **Example Collision**:
 ```swift
-public func process(_ x: Int) -> String
-public func process(_ x: String) -> Int
+public func isPositive(value: Int) -> Bool
+public func isPositive(number: Int) -> Bool
 ```
-Both map to the same Kotlin name `process`, causing conflicts.
+Both generate identical Kotlin signatures:
+```kotlin
+fun isPositive(value: Long): Boolean  // collision!
+fun isPositive(number: Long): Boolean // collision! Same JVM signature
+```
 
-**Why Not Fixed**:
-- The Java generators use `ThunkNameRegistry` for mangling, but emit separate Java methods
-- Kotlin's overload rules differ from Java's (requires distinct JVM signatures)
-- Focus was on proving delegation architecture first
+**Note**: Type-based overloading works fine (e.g., `isPositive(_: Int)` and `isPositive(_: Double)` generate distinct signatures).
 
-**Mitigation**: Currently, whichever function is visited last "wins" in the generated file.
+**Root Cause**: Generator uses base name + parameter types, and since JVM signatures are identical, Kotlin compilation fails.
+
+**Why Not Fixed**: Focus was on proving delegation architecture first.
+
+**Mitigation**: Last function visited "wins" in generated file.
 
 ### 4. **Single Output File**
 
@@ -292,7 +297,56 @@ kotlinPackage: String = config.javaPackage ?? ""
 
 **Trade-off**: No way to specify different packages for Java vs Kotlin output.
 
-### 8. **Minimal Sample Project**
+### 8. **No Default Parameter Support**
+
+**Issue**: Swift functions with default parameter values are not handled. The default values are ignored, and all parameters become required in the generated Kotlin code.
+
+**Example**:
+```swift
+public func greet(name: String, greeting: String = "Hello") {
+  print("\(greeting), \(name)!")
+}
+```
+
+**Current behavior**: Function generates Kotlin requiring both parameters:
+```kotlin
+fun greet(name: String, greeting: String)
+```
+
+**Root Cause**: The `SwiftParameter` struct in the IR doesn't capture default value information:
+- No field for default values
+- `AnalysisResult` doesn't track which parameters have defaults
+- Default value expressions are not parsed or stored
+
+**Why Not Implemented**:
+- Requires parsing default value expressions from Swift syntax
+- Would require deciding between:
+  - **Method overloading**: Generate multiple Kotlin functions (one with all params, others with defaults)
+  - **Kotlin default parameters**: Generate `fun greet(name: String, greeting: String = "Hello")` but requires evaluating Swift expressions to Kotlin
+
+**Impact**: Functions with default parameters can only be called by providing all arguments explicitly. Common Swift patterns like optional configuration parameters won't have the expected ergonomics in Kotlin.
+
+### 9. **Swift Int → Kotlin Long Mapping on 32-bit Systems**
+
+**Issue**: Swift `Int` is platform-dependent (64-bit on 64-bit systems, 32-bit on 32-bit systems), but we always map it to Kotlin `Long` (always 64-bit).
+
+**Mapping**:
+- Swift `Int` (64-bit on most systems) → Kotlin `Long` (64-bit)
+- Swift `Int32` (always 32-bit) → Kotlin `Int` (always 32-bit)
+
+**Problem on 32-bit Systems**: If Swift code runs on a 32-bit platform:
+- Swift `Int` is actually 32-bit
+- But Kotlin still expects `Long` (64-bit)
+- Java FFM layer might handle this, but semantic mismatch exists
+
+**Why This Mapping**:
+- Modern systems are 64-bit (macOS, iOS, most Linux servers)
+- Matches Java FFM's `long` type for consistency
+- Swift discourages 32-bit development
+
+**Impact**: Potential issues if targeting 32-bit platforms (rare). Consider detecting platform architecture and adjusting mapping.
+
+### 10. **Minimal Sample Project**
 
 **Scope**: The `KotlinFFMSampleApp` sample only demonstrates primitive types.
 
@@ -366,38 +420,51 @@ Both Java and Kotlin emitters would render from this shared IR.
    ```
    Requires runtime conversion between `Swift.Array` and `kotlin.collections.List`.
 
-3. **Structs/Classes**: Generate Kotlin `data class` or `class` wrappers
+3. **Structs/Classes**: Generate Kotlin wrapper classes with methods
    ```swift
-   public struct Point { var x: Double; var y: Double }
-   public func distance(_ p1: Point, _ p2: Point) -> Double
+   public struct Point {
+     var x: Double
+     var y: Double
+     func distance(to other: Point) -> Double {
+       let dx = x - other.x
+       let dy = y - other.y
+       return sqrt(dx * dx + dy * dy)
+     }
+   }
    ```
    ```kotlin
-   data class Point(val x: Double, val y: Double)
-   fun distance(p1: Point, p2: Point): Double
+   class Point(val x: Double, val y: Double) {
+     fun distance(other: Point): Double {
+       return PointFFM.distance(this, other)  // delegates to Java FFM
+     }
+   }
    ```
 
-4. **Enums**: Map to Kotlin `enum class` or `sealed class`
+4. **Enums**: Map to Kotlin `enum class`
 
 5. **Protocols**: Map to Kotlin `interface`
 
 6. **Generics**: Requires deep type parameter analysis and JVM erasure handling
 
-### Proper Overload Resolution
+### Argument Label Disambiguation
 
-**Current Problem**: Functions with same base name collide.
+**Current Problem**: Swift functions with same parameter types but different argument labels generate identical Kotlin signatures.
 
-**Solution**: Use Swift's full signature (including argument labels) for disambiguation:
+**Example**:
 ```swift
-func process(_ x: Int) -> String      // → processInt
-func process(_ x: String) -> Int      // → processString
+func isPositive(value: Int) -> Bool    // argument label: "value"
+func isPositive(number: Int) -> Bool   // argument label: "number"
 ```
 
-**Mangling Strategy Options**:
-1. Include argument labels: `process_Int_to_String(x: Long): String`
-2. Numeric suffix: `process(x: Long): String`, `process2(x: String): Long`
-3. Use `@JvmName` annotations to specify exact JVM signature
+Both generate: `fun isPositive(...: Long): Boolean` → JVM signature collision
 
-The `ThunkNameRegistry` already used by FFM/JNI generators provides infrastructure for this.
+**Solution**: Include argument labels in generated Kotlin function names:
+```kotlin
+fun isPositiveValue(value: Long): Boolean    // from isPositive(value:)
+fun isPositiveNumber(number: Long): Boolean  // from isPositive(number:)
+```
+
+**Note**: Type-based overloading already works (different parameter types → different JVM signatures).
 
 ### Direct Kotlin-FFM Approach (Advanced Alternative)
 
@@ -453,22 +520,23 @@ object MySwiftModule {
    - Update `swiftTypeToKotlin` to recognize optional wrapper
    - Add test cases for nullable parameters and returns
 
-2. **Improve Overload Handling**: Use `ThunkNameRegistry` or implement simple name mangling
-   - Detect collisions during generation
-   - Emit unique Kotlin function names with `@JvmName` annotations
+2. **Fix String Return Types**:
+   - Investigate FFM generator limitation at `FFMSwift2JavaGenerator+FunctionLowering.swift:733-735`
+   - Either fix in FFM generator or implement workaround in Kotlin wrapper
 
-3. **Expand Keyword List**: Add complete set of Kotlin keywords to escaping logic
-
-4. **Add More Samples**: Create examples demonstrating real-world use cases
-
-5. **Support Simple Collections**: Map `[Int]` → `List<Long>` (signature level)
+3. **Support Simple Collections**: Map `[Int]` → `List<Long>` (signature level)
    - Arrays: `Swift.Array` → `kotlin.collections.List`
    - Dictionaries: `Swift.Dictionary` → `kotlin.collections.Map`
    - Initial implementation: signatures only, runtime conversion TBD
 
-6. **Fix String Return Types**:
-   - Investigate FFM generator limitation
-   - Either fix in FFM generator or implement workaround in Kotlin wrapper
+4. **Argument Label Disambiguation**: Handle Swift functions with same types but different labels
+   - Detect when argument labels differ but parameter types are identical
+   - Include labels in Kotlin function names or use `@JvmName`
+   - Example: `isPositive(value:)` → `isPositiveValue()`, `isPositive(number:)` → `isPositiveNumber()`
+
+5. **Expand Keyword List**: Add complete set of Kotlin keywords to escaping logic
+
+6. **Add More Samples**: Create examples demonstrating real-world use cases
 
 7. **Improve Error Messages**: Better diagnostics when types can't be mapped
 
@@ -476,21 +544,37 @@ object MySwiftModule {
 
 ### Medium Priority
 
-9. **Struct/Class Generation**: Emit Kotlin `data class` for Swift structs
-   - Generate wrapper classes that delegate to Java FFM struct wrappers
-   - Support primitive fields first, then reference types
+9. **Support Default Parameters**: Handle Swift functions with default parameter values
+   - **Option A**: Generate Kotlin method overloads
+     ```kotlin
+     // Full version
+     fun greet(name: String, greeting: String): String {
+       return MyModule.greet(name, greeting)
+     }
+     // Overload with default
+     fun greet(name: String): String {
+       return greet(name, "Hello")
+     }
+     ```
+   - **Option B**: Use Kotlin default parameters (requires evaluating Swift default expressions)
+     ```kotlin
+     fun greet(name: String, greeting: String = "Hello"): String
+     ```
+   - Requires extending `SwiftParameter` to capture default value information
+   - Need to handle Swift-specific literals (`#fileID`, `#line`, `#function`)
+   - Add test cases for various default parameter patterns
 
-10. **Enum Support**: Map Swift enums to Kotlin `enum class` or `sealed class`
+10. **Struct/Class Generation**: Emit Kotlin wrapper classes for Swift structs and classes
 
-11. **Error Handling**: Map Swift `throws` to Kotlin `@Throws(Exception::class)`
+11. **Enum Support**: Map Swift enums to Kotlin `enum class`
+
+12. **Error Handling**: Map Swift `throws` to Kotlin `@Throws(Exception::class)`
     - Translate Swift error types to Kotlin exception hierarchy
     - Handle error propagation through Java FFM layer
 
-12. **Async Support**: Map Swift `async` to Kotlin `suspend` functions
+13. **Async Support**: Map Swift `async` to Kotlin `suspend` functions
     - Requires understanding how Java FFM handles async Swift functions
     - Bridge to Kotlin coroutines
-
-13. **Better Name Mangling**: Implement proper overload resolution using argument labels
 
 ### Lower Priority
 
@@ -511,28 +595,25 @@ object MySwiftModule {
 
 18. **Incremental Generation**: Only regenerate changed Swift modules
 
-19. **IDE Integration**: Language server protocol support for Kotlin ↔ Swift navigation
-
-20. **Performance Optimization**:
-    - Minimize delegation overhead
-    - Consider direct FFM approach for hot paths
-    - Add inline annotations where appropriate
-
 ## Technical Debt and Known Issues
 
 1. **Mode vs Language Confusion**: `JExtractGenerationMode` now conflates backend (FFM/JNI) with language (Kotlin)
 
-2. **No Validation of Full Kotlin Keywords**: Full keyword list (~70 words) not implemented
+2. **No Default Parameter Support**: Swift functions with default parameter values ignore the defaults - all parameters become required in Kotlin
 
-3. **Parameter Name Collisions**: If Swift parameter names are all `_`, synthesized names `p0, p1, ...` may conflict with actual parameter names
+3. **Swift Int → Kotlin Long on 32-bit**: Swift `Int` is platform-dependent but always maps to `Long` (64-bit), potentially causing issues on 32-bit systems
 
-4. **No Namespace Collision Prevention**: Kotlin file `MyModule.kt` in same package as Java class `MyModule` works because we call the Java class, but could be clearer
+4. **No Validation of Full Kotlin Keywords**: Full keyword list (~70 words) not implemented
 
-5. **No Logging**: Kotlin generator doesn't log progress/skipped functions to console (FFM/JNI generators do)
+4. **Parameter Name Collisions**: If Swift parameter names are all `_`, synthesized names `p0, p1, ...` may conflict with actual parameter names
 
-6. **Test Fragility**: Tests match exact string chunks including whitespace – brittle if formatting changes
+5. **No Namespace Collision Prevention**: Kotlin file `MyModule.kt` in same package as Java class `MyModule` works because we call the Java class, but could be clearer
 
-7. **DYLD_LIBRARY_PATH Hardcoded**: Assumes Swift runtime at `/usr/lib/swift` – won't work on non-standard installations
+6. **No Logging**: Kotlin generator doesn't log progress/skipped functions to console (FFM/JNI generators do)
+
+7. **Test Fragility**: Tests match exact string chunks including whitespace – brittle if formatting changes
+
+8. **DYLD_LIBRARY_PATH Hardcoded**: Assumes Swift runtime at `/usr/lib/swift` – won't work on non-standard installations
 
 ## Conclusion
 
