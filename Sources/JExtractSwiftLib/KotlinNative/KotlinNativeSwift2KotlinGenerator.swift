@@ -52,10 +52,12 @@ package class KotlinNativeSwift2KotlinGenerator {
     let thunkName: String        // e.g. "swiftjava_SimpleSwiftLib_add_a_b"
     let kotlinParams: [String]   // e.g. ["a: Long", "b: Long"]
     let kotlinReturn: String     // e.g. "Long"
-    let cReturn: String          // e.g. "long"
-    let cParamTypes: [String]    // e.g. ["long", "long"]
-    let argNames: [String]       // e.g. ["a", "b"]
+    let argNames: [String]       // e.g. ["a", "b"] (Kotlin call arguments)
     let isThrowing: Bool
+    /// The thunk's C declaration, lowered via the shared FFM CType/CFunction
+    /// machinery — the same lowering that produces FFM's Java FunctionDescriptor,
+    /// so the C ABI has a single source of truth across modes.
+    let cFunction: CFunction
   }
 
   /// Outcome of resolving one imported function: either an emittable
@@ -113,43 +115,54 @@ package class KotlinNativeSwift2KotlinGenerator {
     guard decl.hasParent == false else { return skip("not a top-level function (has parent)") }
     guard decl.isAsync == false else { return skip("async not supported in kotlinNative mode") }
 
-    // Parameters (primitive-only).
+    // Kotlin-side scope gate: defines what kotlinNative supports today
+    // (Int/Int32/Bool/Double/Void). String is deferred (needs memScoped
+    // conversion); everything else is unsupported.
     var kotlinParams: [String] = []
-    var cParamTypes: [String] = []
     var argNames: [String] = []
     for (i, p) in decl.functionSignature.parameters.enumerated() {
-      if swiftTypeToKotlin(p.type) == "String" {
+      let ktTy = swiftTypeToKotlin(p.type)
+      if ktTy == "String" {
         return skip("String parameter not supported in kotlinNative mode")
       }
-      guard let cTy = swiftTypeToC(p.type), let ktTy = swiftTypeToKotlin(p.type) else {
+      guard let ktTy else {
         return skip("unsupported param type '\(p.type)'")
       }
       let name = parameterName(p, at: i)
       kotlinParams.append("\(name): \(ktTy)")
-      cParamTypes.append(cTy)
       argNames.append(name)
     }
 
-    // Return type (primitive-only).
-    if swiftTypeToKotlin(decl.functionSignature.result.type) == "String" {
+    let ktReturnType = swiftTypeToKotlin(decl.functionSignature.result.type)
+    if ktReturnType == "String" {
       return skip("String return type not supported in kotlinNative mode")
     }
-    guard
-      let cReturn = swiftTypeToC(decl.functionSignature.result.type),
-      let ktReturn = swiftTypeToKotlin(decl.functionSignature.result.type)
-    else {
+    guard let ktReturn = ktReturnType else {
       return skip("unsupported return type '\(decl.functionSignature.result.type)'")
+    }
+
+    // C-side: reuse the shared FFM cdecl -> CType/CFunction lowering for the
+    // thunk's C declaration. This is the single source of truth for the C ABI
+    // (the same lowering FFM uses for its FunctionDescriptor) and is correct for
+    // every type FFM supports, not just primitives. For the primitive scope
+    // gated above the raw signature is already cdecl-valid, so this does not
+    // throw; the catch defends against the scope widening (e.g. Phase 5).
+    let thunkName = thunkNames.functionThunkName(decl: decl)
+    let cFunction: CFunction
+    do {
+      cFunction = try CFunction(cdeclSignature: decl.functionSignature, cName: thunkName)
+    } catch {
+      return skip("unsupported C lowering: \(error)")
     }
 
     return .emit(NativeFunc(
       kotlinName: decl.name,
-      thunkName: thunkNames.functionThunkName(decl: decl),
+      thunkName: thunkName,
       kotlinParams: kotlinParams,
       kotlinReturn: ktReturn,
-      cReturn: cReturn,
-      cParamTypes: cParamTypes,
       argNames: argNames,
-      isThrowing: decl.isThrowing
+      isThrowing: decl.isThrowing,
+      cFunction: cFunction
     ))
   }
 
@@ -206,10 +219,14 @@ package class KotlinNativeSwift2KotlinGenerator {
     printer.print("#ifndef \(guardName)")
     printer.print("#define \(guardName)")
     printer.print("")
+    // The lowered C types use the <stdint.h>/<stddef.h> typedefs
+    // (ptrdiff_t, int32_t, ...) rather than bare int/long.
+    printer.print("#include <stddef.h>")
+    printer.print("#include <stdint.h>")
+    printer.print("")
     for resolved in resolvedFunctions() {
       guard case .emit(let fn) = resolved else { continue }
-      let cParams = fn.cParamTypes.isEmpty ? "void" : fn.cParamTypes.joined(separator: ", ")
-      printer.print("\(fn.cReturn) \(fn.thunkName)(\(cParams));")
+      printer.print("\(fn.cFunction.description);")
     }
     printer.print("")
     printer.print("#endif")
@@ -244,32 +261,6 @@ package class KotlinNativeSwift2KotlinGenerator {
     case "Double", "Swift.Double": return "Double"
     case "String", "Swift.String": return "String"
     case "Void", "Swift.Void", "()": return "Unit"
-    default: return nil
-    }
-  }
-
-  /// Map a Swift known type to the C type used in the cinterop header, matching
-  /// the C ABI of the FFM `@_cdecl` thunks (Swift Int -> NSInteger -> `long`,
-  /// Int32 -> `int`, Bool -> `BOOL`/`_Bool`, Double -> `double`). Returns `nil`
-  /// for anything not yet supported (including String).
-  func swiftTypeToC(_ t: SwiftType) -> String? {
-    if let known = t.asNominalTypeDeclaration?.knownTypeKind {
-      switch known {
-      case .int: return "long"
-      case .int32: return "int"
-      case .bool: return "_Bool"
-      case .double: return "double"
-      case .void: return "void"
-      default: break
-      }
-    }
-
-    switch String(describing: t) {
-    case "Int", "Swift.Int": return "long"
-    case "Int32", "Swift.Int32": return "int"
-    case "Bool", "Swift.Bool": return "_Bool"
-    case "Double", "Swift.Double": return "double"
-    case "Void", "Swift.Void", "()": return "void"
     default: return nil
     }
   }
