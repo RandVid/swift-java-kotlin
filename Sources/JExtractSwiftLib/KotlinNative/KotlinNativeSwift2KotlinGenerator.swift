@@ -5,7 +5,7 @@
 //  Generates Kotlin/Native sources that call the Swift `@_cdecl` C thunks
 //  directly via cinterop, with no JVM / Java FFM layer in between.
 //
-//  This generator emits two artifacts:
+//  This generator emits two artifacts from a single resolved model:
 //   1. `<Module>.kt`  — Kotlin/Native wrappers that call the cinterop-bound
 //      thunk functions (imported via a wildcard import of the cinterop package).
 //   2. `<Module>.h`   — a plain-C header declaring the thunks, which the
@@ -14,6 +14,10 @@
 //      thunks in `#pragma clang attribute push(external_source_symbol(
 //      language="Swift", ...))`, which makes cinterop treat them as Swift
 //      (not C) declarations and skip them.
+//
+//  Both artifacts are rendered from the same `[ResolvedFunc]` (see
+//  `resolvedFunctions()`), so they always agree on which functions are emitted
+//  and on the thunk symbol names.
 //
 //  Scope (primitive-only, like the `kotlin` JVM mode minus String, which on
 //  Kotlin/Native needs explicit memScoped conversion — deferred):
@@ -37,10 +41,29 @@ package class KotlinNativeSwift2KotlinGenerator {
   /// resolve to the exact C symbols exported by the Swift `@_cdecl` thunks.
   var thunkNames: ThunkNameRegistry
 
-  /// Plain-C prototypes for the thunks we emit wrappers for, collected while
-  /// printing the Kotlin file and re-used when writing the C header so the two
-  /// artifacts always stay in sync.
-  var cPrototypes: [String] = []
+  /// Cached result of resolving the imported global functions into the model
+  /// both renderers consume. Computed once (the resolution mutates
+  /// `thunkNames`); see `resolvedFunctions()`.
+  private var resolvedCache: [ResolvedFunc]?
+
+  /// A top-level function that maps cleanly onto a single `@_cdecl` thunk.
+  struct NativeFunc {
+    let kotlinName: String       // e.g. "add"
+    let thunkName: String        // e.g. "swiftjava_SimpleSwiftLib_add_a_b"
+    let kotlinParams: [String]   // e.g. ["a: Long", "b: Long"]
+    let kotlinReturn: String     // e.g. "Long"
+    let cReturn: String          // e.g. "long"
+    let cParamTypes: [String]    // e.g. ["long", "long"]
+    let argNames: [String]       // e.g. ["a", "b"]
+    let isThrowing: Bool
+  }
+
+  /// Outcome of resolving one imported function: either an emittable
+  /// `NativeFunc`, or a `// Skipped …` comment explaining why it was dropped.
+  enum ResolvedFunc {
+    case emit(NativeFunc)
+    case skip(comment: String)
+  }
 
   /// Package that cinterop generates its bindings into (set via the `.def`
   /// `package =` line). Wrappers wildcard-import this package.
@@ -68,6 +91,68 @@ package class KotlinNativeSwift2KotlinGenerator {
     try writeCinteropHeader(printer: &headerPrinter)
   }
 
+  // MARK: - Resolution (single source of truth for both artifacts)
+
+  /// Resolve the module's top-level functions once. The result drives both the
+  /// Kotlin and C-header renderers, guaranteeing they emit the same function
+  /// set with the same thunk names.
+  func resolvedFunctions() -> [ResolvedFunc] {
+    if let cached = resolvedCache { return cached }
+    let resolved = analysis.importedGlobalFuncs.map { resolve($0) }
+    resolvedCache = resolved
+    return resolved
+  }
+
+  private func resolve(_ decl: ImportedFunc) -> ResolvedFunc {
+    func skip(_ reason: String) -> ResolvedFunc {
+      .skip(comment: "// Skipped \(decl.displayName): \(reason)")
+    }
+
+    // Only top-level functions: skip members/initializers/accessors/etc.
+    guard decl.apiKind == .function else { return skip("apiKind=\(decl.apiKind)") }
+    guard decl.hasParent == false else { return skip("not a top-level function (has parent)") }
+    guard decl.isAsync == false else { return skip("async not supported in kotlinNative mode") }
+
+    // Parameters (primitive-only).
+    var kotlinParams: [String] = []
+    var cParamTypes: [String] = []
+    var argNames: [String] = []
+    for (i, p) in decl.functionSignature.parameters.enumerated() {
+      if swiftTypeToKotlin(p.type) == "String" {
+        return skip("String parameter not supported in kotlinNative mode")
+      }
+      guard let cTy = swiftTypeToC(p.type), let ktTy = swiftTypeToKotlin(p.type) else {
+        return skip("unsupported param type '\(p.type)'")
+      }
+      let name = parameterName(p, at: i)
+      kotlinParams.append("\(name): \(ktTy)")
+      cParamTypes.append(cTy)
+      argNames.append(name)
+    }
+
+    // Return type (primitive-only).
+    if swiftTypeToKotlin(decl.functionSignature.result.type) == "String" {
+      return skip("String return type not supported in kotlinNative mode")
+    }
+    guard
+      let cReturn = swiftTypeToC(decl.functionSignature.result.type),
+      let ktReturn = swiftTypeToKotlin(decl.functionSignature.result.type)
+    else {
+      return skip("unsupported return type '\(decl.functionSignature.result.type)'")
+    }
+
+    return .emit(NativeFunc(
+      kotlinName: decl.name,
+      thunkName: thunkNames.functionThunkName(decl: decl),
+      kotlinParams: kotlinParams,
+      kotlinReturn: ktReturn,
+      cReturn: cReturn,
+      cParamTypes: cParamTypes,
+      argNames: argNames,
+      isThrowing: decl.isThrowing
+    ))
+  }
+
   // MARK: - Kotlin sources
 
   package func writeExportedKotlinSources(printer: inout CodePrinter) throws {
@@ -87,79 +172,29 @@ package class KotlinNativeSwift2KotlinGenerator {
     printer.print("package \(kotlinPackage)\n")
     printer.print("import \(cinteropPackage).*\n")
 
-    for decl in analysis.importedGlobalFuncs {
-      printTopLevelKotlinFunction(&printer, decl)
+    for resolved in resolvedFunctions() {
+      switch resolved {
+      case .skip(let comment):
+        printer.print(comment)
+      case .emit(let fn):
+        printKotlinFunction(&printer, fn)
+      }
       printer.print("")
     }
   }
 
-  func printTopLevelKotlinFunction(_ printer: inout CodePrinter, _ decl: ImportedFunc) {
-    // Only top-level functions: skip members/initializers/accessors/etc.
-    guard decl.apiKind == .function else {
-      printer.print("// Skipped \(decl.displayName): apiKind=\(decl.apiKind)")
-      return
-    }
-    guard decl.hasParent == false else {
-      printer.print("// Skipped \(decl.displayName): not a top-level function (has parent)")
-      return
-    }
-    guard decl.isAsync == false else {
-      printer.print("// Skipped \(decl.displayName): async not supported in kotlinNative mode")
-      return
-    }
+  func printKotlinFunction(_ printer: inout CodePrinter, _ fn: NativeFunc) {
+    let paramsString = fn.kotlinParams.joined(separator: ", ")
+    let throwsComment = fn.isThrowing ? " // throws" : ""
+    let argsString = fn.argNames.joined(separator: ", ")
 
-    // Render parameters (primitive-only).
-    var renderedParams: [String] = []
-    var cParamTypes: [String] = []
-    var argNames: [String] = []
-    renderedParams.reserveCapacity(decl.functionSignature.parameters.count)
-
-    for (i, p) in decl.functionSignature.parameters.enumerated() {
-      if swiftTypeToKotlin(p.type) == "String" {
-        printer.print("// Skipped \(decl.displayName): String parameter not supported in kotlinNative mode")
-        return
-      }
-      guard let cTy = swiftTypeToC(p.type), let ktTy = swiftTypeToKotlin(p.type) else {
-        printer.print("// Skipped \(decl.displayName): unsupported param type '\(p.type)'")
-        return
-      }
-      let name = parameterName(p, at: i)
-      renderedParams.append("\(name): \(ktTy)")
-      cParamTypes.append(cTy)
-      argNames.append(name)
-    }
-
-    // Return type (primitive-only).
-    if swiftTypeToKotlin(decl.functionSignature.result.type) == "String" {
-      printer.print("// Skipped \(decl.displayName): String return type not supported in kotlinNative mode")
-      return
-    }
-    guard
-      let cReturn = swiftTypeToC(decl.functionSignature.result.type),
-      let ktReturn = swiftTypeToKotlin(decl.functionSignature.result.type)
-    else {
-      printer.print("// Skipped \(decl.displayName): unsupported return type '\(decl.functionSignature.result.type)'")
-      return
-    }
-
-    let paramsString = renderedParams.joined(separator: ", ")
-    let throwsComment = decl.isThrowing ? " // throws" : ""
-
-    // The C symbol exported by the Swift @_cdecl thunk for this function.
-    let thunkName = thunkNames.functionThunkName(decl: decl)
-    let argsString = argNames.joined(separator: ", ")
-
-    printer.print("fun \(decl.name)(\(paramsString)): \(ktReturn) {\(throwsComment)")
-    if ktReturn == "Unit" {
-      printer.print("  \(thunkName)(\(argsString))")
+    printer.print("fun \(fn.kotlinName)(\(paramsString)): \(fn.kotlinReturn) {\(throwsComment)")
+    if fn.kotlinReturn == "Unit" {
+      printer.print("  \(fn.thunkName)(\(argsString))")
     } else {
-      printer.print("  return \(thunkName)(\(argsString))")
+      printer.print("  return \(fn.thunkName)(\(argsString))")
     }
     printer.print("}")
-
-    // Record the matching plain-C prototype for the cinterop header.
-    let cParams = cParamTypes.isEmpty ? "void" : cParamTypes.joined(separator: ", ")
-    cPrototypes.append("\(cReturn) \(thunkName)(\(cParams));")
   }
 
   // MARK: - cinterop C header
@@ -171,8 +206,10 @@ package class KotlinNativeSwift2KotlinGenerator {
     printer.print("#ifndef \(guardName)")
     printer.print("#define \(guardName)")
     printer.print("")
-    for proto in cPrototypes {
-      printer.print(proto)
+    for resolved in resolvedFunctions() {
+      guard case .emit(let fn) = resolved else { continue }
+      let cParams = fn.cParamTypes.isEmpty ? "void" : fn.cParamTypes.joined(separator: ", ")
+      printer.print("\(fn.cReturn) \(fn.thunkName)(\(cParams));")
     }
     printer.print("")
     printer.print("#endif")
