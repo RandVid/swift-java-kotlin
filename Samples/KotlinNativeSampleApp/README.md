@@ -42,9 +42,16 @@ hosts via `settings.gradle.kts`.
 ## Run
 
 ```bash
-# From the repo root
+# Run the demo app (like KotlinFFMSampleApp's `run`)
+./gradlew :Samples:KotlinNativeSampleApp:run
+
+# Run the integration tests
 ./gradlew :Samples:KotlinNativeSampleApp:macosArm64Test
 
 # Or the CI entry point (also builds the root swift-java tool)
 cd Samples/KotlinNativeSampleApp && ./ci-validate.sh
 ```
+
+`run` is an alias for the Kotlin/Native `runDebugExecutableMacosArm64` task. The
+demo entry point is `com.example.kotlinnative.main` in
+`src/macosArm64Main/kotlin/KotlinNativeDemo.kt`.

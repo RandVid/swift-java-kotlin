@@ -111,6 +111,12 @@ kotlin {
                 compilerOptions.optIn.add("kotlinx.cinterop.ExperimentalForeignApi")
             }
         }
+        // Runnable demo. Produces runDebugExecutableMacosArm64 (aliased as `run`).
+        binaries {
+            executable {
+                entryPoint = "com.example.kotlinnative.main"
+            }
+        }
     }
 
     sourceSets {
@@ -132,4 +138,12 @@ tasks.withType<CInteropProcess>().configureEach {
 }
 tasks.matching { it.name == "compileKotlinMacosArm64" }.configureEach {
     dependsOn(generateKotlinNativeBindings)
+}
+
+// Convenience alias so the demo runs like the KotlinFFM sample's `run`:
+//   ./gradlew :Samples:KotlinNativeSampleApp:run
+tasks.register("run") {
+    group = "application"
+    description = "Run the Kotlin/Native demo (macosArm64)"
+    dependsOn("runDebugExecutableMacosArm64")
 }
