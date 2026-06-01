@@ -15,6 +15,15 @@
 
 pluginManagement {
     includeBuild("BuildLogic")
+    // Centralize the Kotlin plugin version so sibling sample projects (the
+    // Kotlin/JVM and Kotlin/Native samples) resolve it from one shared
+    // classloader scope. Without this, applying the Kotlin plugin in two
+    // sibling projects yields conflicting KotlinNativeBundleBuildService
+    // classloaders.
+    plugins {
+        kotlin("jvm") version "2.3.10"
+        kotlin("multiplatform") version "2.3.10"
+    }
 }
 
 rootProject.name = "swift-java"
