@@ -66,6 +66,13 @@ val ffmModules = setOf(
     "SwiftAndJavaJarFFMSampleLib",
 )
 
+// Samples that can only be built on macOS (e.g. Kotlin/Native targeting
+// macosArm64 + cinterop, which require the macOS SDK and konan toolchain).
+val macosOnlyModules = setOf(
+    "KotlinNativeSampleApp",
+)
+val isMacOS = System.getProperty("os.name").startsWith("Mac")
+
 val skipped = mutableListOf<String>()
 
 include("SwiftKitCore")
@@ -82,6 +89,8 @@ if (!(settings.providers.gradleProperty("skipSamples").orNull.toBoolean())) {
             val name = it.name
             if (name in ffmModules && !ffmCapable) {
                 skipped += "Samples:$name"
+            } else if (name in macosOnlyModules && !isMacOS) {
+                skipped += "Samples:$name (macOS only)"
             } else {
                 include(":Samples:$name")
             }
