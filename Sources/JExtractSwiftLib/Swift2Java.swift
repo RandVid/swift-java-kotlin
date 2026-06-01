@@ -145,13 +145,23 @@ public struct SwiftToJava {
 
       try generator.generate()
     
-     case .kotlin:
-       let generator = KotlinSwift2KotlinGenerator(
-         config: self.config,
-         translator: translator,
-         kotlinPackage: config.javaPackage ?? "",
-         kotlinOutputDirectory: outputJavaDirectory
-       )
+    case .kotlin:
+      let generator = KotlinSwift2KotlinGenerator(
+        config: self.config,
+        translator: translator,
+        kotlinPackage: config.javaPackage ?? "",
+        kotlinOutputDirectory: outputJavaDirectory
+      )
+
+      try generator.generate()
+
+    case .kotlinNative:
+      let generator = KotlinNativeSwift2KotlinGenerator(
+        config: self.config,
+        translator: translator,
+        kotlinPackage: config.javaPackage ?? "",
+        kotlinOutputDirectory: outputJavaDirectory
+      )
 
       try generator.generate()
     }
