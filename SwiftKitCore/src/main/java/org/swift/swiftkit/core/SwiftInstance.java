@@ -14,42 +14,36 @@
 
 package org.swift.swiftkit.core;
 
-import java.util.concurrent.atomic.AtomicBoolean;
-
 public interface SwiftInstance {
     /**
      * Pointer to the {@code self} of the underlying Swift object or value.
      *
-     * @apiNote When using this pointer one must ensure that the underlying object
-     *          is kept alive using some means (e.g. a class remains retained), as
-     *          this function does not ensure safety of the address in any way.
+     * <b>API Note:</b> When using this pointer one must ensure that the underlying object
+     * is kept alive using some means (e.g. a class remains retained), as
+     * this function does not ensure safety of the address in any way.
      */
     long $memoryAddress();
 
     /**
-     * Called when the arena has decided the value should be destroyed.
-     * <p/>
-     * <b>Warning:</b> The cleanup action must not capture {@code this}.
+     * Returns the cleanup associated with this instance.
+     * <p>
+     * The same cleanup instance is returned on every call. The cleanup also serves as the
+     * destroyed-state holder, allowing callers to poll {@link SwiftInstanceCleanup#isDestroyed()}
+     * even after this instance has been GC-ed.
+     * <p>
+     * <b>Warning:</b> The cleanup must not capture {@code this}.
      */
-    SwiftInstanceCleanup $createCleanup();
+    SwiftInstanceCleanup $cleanup();
 
     /**
-     * Exposes a boolean value which can be used to indicate if the object was destroyed.
-     * <p/>
-     * This is exposing the object, rather than performing the action because we don't want to accidentally
-     * form a strong reference to the {@code SwiftInstance} which could prevent the cleanup from running,
-     * if using an GC managed instance (e.g. using an {@code AutoSwiftMemorySession}.
-     */
-    AtomicBoolean $statusDestroyedFlag();
-    /**
      * Ensures that this instance has not been destroyed.
-     * <p/>
+     * <p>
      * If this object has been destroyed, calling this method will cause an {@link IllegalStateException}
      * to be thrown. This check should be performed before accessing {@code $memorySegment} to prevent
      * use-after-free errors.
      */
     default void $ensureAlive() {
-        if (this.$statusDestroyedFlag().get()) {
+        if (this.$cleanup().isDestroyed()) {
             throw new IllegalStateException("Attempted to call method on already destroyed instance of " + getClass().getSimpleName() + "!");
         }
     }

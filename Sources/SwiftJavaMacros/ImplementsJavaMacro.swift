@@ -16,10 +16,39 @@ import SwiftSyntax
 import SwiftSyntaxBuilder
 import SwiftSyntaxMacros
 
-enum JavaImplementationMacro {}
+package enum JavaImplementationMacro {}
+
+// JNI identifier escaping per the JNI specification:
+// https://docs.oracle.com/javase/8/docs/technotes/guides/jni/spec/design.html#resolving_native_method_names
+extension String {
+  /// Returns the string with characters escaped according to JNI symbol naming rules.
+  /// - `_` → `_1`
+  /// - `.` and `/` → `_` (package/class separator)
+  /// - `;` → `_2`
+  /// - `[` → `_3`
+  /// - Non-ASCII → `_0XXXX` (UTF-16 hex)
+  var escapedJNIIdentifier: String {
+    self.compactMap { ch -> String in
+      switch ch {
+      case "_": return "_1"
+      case "/": return "_"
+      case ";": return "_2"
+      case "[": return "_3"
+      default:
+        if ch.isASCII && (ch.isLetter || ch.isNumber) {
+          return String(ch)
+        } else if let utf16 = ch.utf16.first {
+          return "_0\(String(format: "%04x", utf16))"
+        } else {
+          fatalError("Invalid JNI character: \(ch)")
+        }
+      }
+    }.joined()
+  }
+}
 
 extension JavaImplementationMacro: PeerMacro {
-  static func expansion(
+  package static func expansion(
     of node: AttributeSyntax,
     providingPeersOf declaration: some DeclSyntaxProtocol,
     in context: some MacroExpansionContext
@@ -112,13 +141,39 @@ extension JavaImplementationMacro: PeerMacro {
         } ?? ""
 
       let swiftName = memberFunc.name.text
-      let cName = "Java_" + className.replacingOccurrences(of: ".", with: "_") + "_" + swiftName
+
+      // If @JavaMethod has a name argument (e.g., @JavaMethod("$size")), use it as the JNI method name.
+      // Otherwise, fall back to the Swift function name.
+      let jniMethodName: String = {
+        guard
+          let javaMethodAttr = attributes.compactMap({ attr -> AttributeSyntax? in
+            guard case .attribute(let attribute) = attr,
+              attribute.attributeName.trimmedDescription == "JavaMethod"
+            else {
+              return nil
+            }
+            return attribute
+          }).first,
+          case .argumentList(let args) = javaMethodAttr.arguments,
+          let firstArg = args.first,
+          firstArg.label == nil || firstArg.label?.text == "javaMethodName",
+          let stringLiteral = firstArg.expression.as(StringLiteralExprSyntax.self),
+          stringLiteral.segments.count == 1,
+          case let .stringSegment(nameSegment)? = stringLiteral.segments.first
+        else {
+          return swiftName
+        }
+        return nameSegment.content.text
+      }()
+
+      let escapedClassName = className.split(separator: ".").map { String($0).escapedJNIIdentifier }.joined(separator: "_")
+      let cName = "Java_" + escapedClassName + "_" + jniMethodName.escapedJNIIdentifier
       let innerBody: CodeBlockItemListSyntax
       let isThrowing = memberFunc.signature.effectSpecifiers?.throwsClause != nil
       let tryClause: String = isThrowing ? "try " : ""
       let getJNIValue: String =
         returnType != nil
-        ? "\n  .getJNIValue(in: environment)"
+        ? "\n  .getJNILocalRefValue(in: environment)"
         : ""
       let swiftTypeName = extensionDecl.extendedType.trimmedDescription
       if isStatic {
@@ -154,8 +209,11 @@ extension JavaImplementationMacro: PeerMacro {
 
       exposedMembers.append(
         """
+        #if compiler(>=6.3)
+        @used
+        #endif
         @_cdecl(\(literal: cName))
-        func \(context.makeUniqueName(swiftName))(\(raw: cParameters.map{ $0.description }.joined(separator: ", ")))\(raw: cReturnType) {
+        public func \(context.makeUniqueName("\(swiftTypeName)_\(swiftName)"))(\(raw: cParameters.map{ $0.description }.joined(separator: ", ")))\(raw: cReturnType) {
         \(body)
         }
         """

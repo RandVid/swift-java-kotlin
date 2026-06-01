@@ -14,12 +14,30 @@
 
 extension Optional where Wrapped: AnyJavaObject {
   public func toJavaOptional() -> JavaOptional<Wrapped> {
-    try! JavaClass<JavaOptional<Wrapped>>().ofNullable(self?.as(JavaObject.self)).as(JavaOptional<Wrapped>.self)!
+    try! JavaClass<JavaOptional<Wrapped>>().ofNullable(self)
   }
 
   public init(javaOptional: JavaOptional<Wrapped>?) {
     if let javaOptional {
       self = javaOptional.isPresent() ? javaOptional.get().as(Wrapped.self) : Optional<Wrapped>.none
+    } else {
+      self = nil
+    }
+  }
+}
+
+extension Optional where Wrapped == String {
+  public func toJavaOptional() -> JavaOptional<JavaString> {
+    if let self {
+      return try! JavaClass<JavaOptional<JavaString>>().of(JavaString(self))
+    } else {
+      return try! JavaClass<JavaOptional<JavaString>>().empty().as(JavaOptional<JavaString>.self)!
+    }
+  }
+
+  public init(javaOptional: JavaOptional<JavaString>?) {
+    if let javaOptional {
+      self = javaOptional.isPresent() ? javaOptional.get().toString() : Optional<Wrapped>.none
     } else {
       self = nil
     }

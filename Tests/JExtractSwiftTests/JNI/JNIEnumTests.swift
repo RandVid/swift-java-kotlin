@@ -12,17 +12,21 @@
 //
 //===----------------------------------------------------------------------===//
 
+import CodePrinting
 import JExtractSwiftLib
+import SwiftJavaConfigurationShared
 import Testing
 
 @Suite
 struct JNIEnumTests {
   let source = """
-      public enum MyEnum {
-        case first
-        case second(String)
-        case third(x: Int64, y: Int32)
-      }
+    public struct MyValue {}
+
+    public enum MyEnum {
+      case first
+      case second(String)
+      case third(x: Int64, y: Int32, MyValue)
+    }
     """
 
   @Test
@@ -40,19 +44,19 @@ struct JNIEnumTests {
 
         import org.swift.swiftkit.core.*;
         import org.swift.swiftkit.core.util.*;
+        import org.swift.swiftkit.core.collections.*;
         import java.util.*;
-        import java.util.concurrent.atomic.AtomicBoolean;
         import org.swift.swiftkit.core.annotations.*;
         """,
         """
         public final class MyEnum implements JNISwiftInstance {
-          static final String LIB_NAME = "SwiftModule";
+          static final java.lang.String LIB_NAME = "SwiftModule";
 
           @SuppressWarnings("unused")
           private static final boolean INITIALIZED_LIBS = initializeLibs();
           static boolean initializeLibs() {
-            System.loadLibrary(SwiftLibraries.LIB_NAME_SWIFT_JAVA);
-            System.loadLibrary(LIB_NAME);
+            SwiftLibraries.loadLibraryWithFallbacks(SwiftLibraries.LIB_NAME_SWIFT_JAVA);
+            SwiftLibraries.loadLibraryWithFallbacks(LIB_NAME);
             return true;
           }
         """,
@@ -60,6 +64,7 @@ struct JNIEnumTests {
         private MyEnum(long selfPointer, SwiftArena swiftArena) {
           SwiftObjects.requireNonZero(selfPointer, "selfPointer");
           this.selfPointer = selfPointer;
+          this.$cleanup = $createCleanup();
 
           // Only register once we have fully initialized the object since this will need the object pointer.
           swiftArena.register(this);
@@ -78,28 +83,6 @@ struct JNIEnumTests {
           return new MyEnum(selfPointer, swiftArena);
         }
         """,
-        """
-        private static native void $destroy(long selfPointer);
-        """,
-        """
-        @Override
-        public Runnable $createDestroyFunction() {
-        long self$ = this.$memoryAddress();
-        if (CallTraces.TRACE_DOWNCALLS) {
-          CallTraces.traceDowncall("MyEnum.$createDestroyFunction",
-              "this", this,
-              "self", self$);
-        }
-        return new Runnable() {
-          @Override
-          public void run() {
-            if (CallTraces.TRACE_DOWNCALLS) {
-              CallTraces.traceDowncall("MyEnum.$destroy", "self", self$);
-            }
-            MyEnum.$destroy(self$);
-          }
-        };
-        """,
       ]
     )
   }
@@ -110,7 +93,7 @@ struct JNIEnumTests {
       input: source,
       .jni,
       .java,
-      detectChunkByInitialLines: 1,
+      detectChunkByInitialLines: 2,
       expectedChunks: [
         """
         public enum Discriminator {
@@ -121,11 +104,9 @@ struct JNIEnumTests {
         """,
         """
         public Discriminator getDiscriminator() {
-          return Discriminator.values()[$getDiscriminator(this.$memoryAddress())];
+          var raw = SwiftObjects.getRawDiscriminator(this.$memoryAddress(), this.$typeMetadataAddress());
+          return Discriminator.values()[raw];
         }
-        """,
-        """
-        private static native int $getDiscriminator(long self);
         """,
       ]
     )
@@ -140,13 +121,13 @@ struct JNIEnumTests {
       detectChunkByInitialLines: 1,
       expectedChunks: [
         """
-        @_cdecl("Java_com_example_swift_MyEnum__00024getDiscriminator__J")
-        public func Java_com_example_swift_MyEnum__00024getDiscriminator__J(environment: UnsafeMutablePointer<JNIEnv?>!, thisClass: jclass, selfPointer: jlong) -> jint {
-          ...
-          switch (self$.pointee) {
-            case .first: return 0
-            case .second: return 1
-            case .third: return 2
+        extension MyEnum: _RawDiscriminatorRepresentable {
+          public var _rawDiscriminator: Int32 {
+            switch self {
+              case .first: return 0
+              case .second: return 1
+              case .third: return 2
+            }
           }
         }
         """
@@ -163,32 +144,19 @@ struct JNIEnumTests {
       detectChunkByInitialLines: 1,
       expectedChunks: [
         """
-        public sealed interface Case {}
+        public sealed interface Case {
+          record First() implements Case {}
+          record Second(java.lang.String arg0) implements Case {}
+          record Third(long x, int y, MyValue arg2) implements Case {}
+        }
         """,
         """
-        public Case getCase() {
-          Discriminator discriminator = this.getDiscriminator();
-          switch (discriminator) {
-            case FIRST: return this.getAsFirst().orElseThrow();
-            case SECOND: return this.getAsSecond().orElseThrow();
-            case THIRD: return this.getAsThird().orElseThrow();
+        public Case getCase(SwiftArena swiftArena) {
+          return switch (this.getDiscriminator()) {
+            case FIRST -> new Case.First();
+            case SECOND -> this.getAsSecond().orElseThrow();
+            case THIRD -> this.getAsThird(swiftArena).orElseThrow();
           }
-          throw new RuntimeException("Unknown discriminator value " + discriminator);
-        }
-        """,
-        """
-        public record First() implements Case {
-          record _NativeParameters() {}
-        }
-        """,
-        """
-        public record Second(java.lang.String arg0) implements Case {
-          record _NativeParameters(java.lang.String arg0) {}
-        }
-        """,
-        """
-        public record Third(long x, int y) implements Case {
-          record _NativeParameters(long x, int y) {}
         }
         """,
       ]
@@ -204,18 +172,18 @@ struct JNIEnumTests {
       detectChunkByInitialLines: 1,
       expectedChunks: [
         """
-        public static MyEnum first(SwiftArena swiftArena$) {
-          return MyEnum.wrapMemoryAddressUnsafe(MyEnum.$first(), swiftArena$);
+        public static MyEnum first(SwiftArena swiftArena) {
+          return MyEnum.wrapMemoryAddressUnsafe(MyEnum.$first(), swiftArena);
         }
         """,
         """
-        public static MyEnum second(java.lang.String arg0, SwiftArena swiftArena$) {
-          return MyEnum.wrapMemoryAddressUnsafe(MyEnum.$second(arg0), swiftArena$);
+        public static MyEnum second(java.lang.String arg0, SwiftArena swiftArena) {
+          return MyEnum.wrapMemoryAddressUnsafe(MyEnum.$second(arg0), swiftArena);
         }
         """,
         """
-        public static MyEnum third(long x, int y, SwiftArena swiftArena$) {
-          return MyEnum.wrapMemoryAddressUnsafe(MyEnum.$third(x, y), swiftArena$);
+        public static MyEnum third(long x, int y, MyValue arg2, SwiftArena swiftArena) {
+          return MyEnum.wrapMemoryAddressUnsafe(MyEnum.$third(x, y, arg2.$memoryAddress()), swiftArena);
         }
         """,
       ]
@@ -236,7 +204,7 @@ struct JNIEnumTests {
           let result$ = UnsafeMutablePointer<MyEnum>.allocate(capacity: 1)
           result$.initialize(to: MyEnum.first)
           let resultBits$ = Int64(Int(bitPattern: result$))
-          return resultBits$.getJNIValue(in: environment)
+          return resultBits$.getJNILocalRefValue(in: environment)
         }
         """,
         """
@@ -245,16 +213,22 @@ struct JNIEnumTests {
           let result$ = UnsafeMutablePointer<MyEnum>.allocate(capacity: 1)
           result$.initialize(to: MyEnum.second(String(fromJNI: arg0, in: environment)))
           let resultBits$ = Int64(Int(bitPattern: result$))
-          return resultBits$.getJNIValue(in: environment)
+          return resultBits$.getJNILocalRefValue(in: environment)
         }
         """,
         """
-        @_cdecl("Java_com_example_swift_MyEnum__00024third__JI")
-        public func Java_com_example_swift_MyEnum__00024third__JI(environment: UnsafeMutablePointer<JNIEnv?>!, thisClass: jclass, x: jlong, y: jint) -> jlong {
+        @_cdecl("Java_com_example_swift_MyEnum__00024third__JIJ")
+        public func Java_com_example_swift_MyEnum__00024third__JIJ(environment: UnsafeMutablePointer<JNIEnv?>!, thisClass: jclass, x: jlong, y: jint, arg2: jlong) -> jlong {
+          assert(arg2 != 0, "arg2 memory address was null")
+          let arg2Bits$ = Int(Int64(fromJNI: arg2, in: environment))
+          let arg2$ = UnsafeMutablePointer<MyValue>(bitPattern: arg2Bits$)
+          guard let arg2$ else {
+            fatalError("arg2 memory address was null in call to \\(#function)!")
+          }
           let result$ = UnsafeMutablePointer<MyEnum>.allocate(capacity: 1)
-          result$.initialize(to: MyEnum.third(x: Int64(fromJNI: x, in: environment), y: Int32(fromJNI: y, in: environment)))
+          result$.initialize(to: MyEnum.third(x: Int64(fromJNI: x, in: environment), y: Int32(fromJNI: y, in: environment), arg2$.pointee))
           let resultBits$ = Int64(Int(bitPattern: result$))
-          return resultBits$.getJNIValue(in: environment)
+          return resultBits$.getJNILocalRefValue(in: environment)
         }
         """,
       ]
@@ -270,29 +244,29 @@ struct JNIEnumTests {
       detectChunkByInitialLines: 1,
       expectedChunks: [
         """
-        public Optional<First> getAsFirst() {
+        public java.util.Optional<Case.First> getAsFirst() {
           if (getDiscriminator() != Discriminator.FIRST) {
-            return Optional.empty();
+            return java.util.Optional.empty();
           }
-          return Optional.of(new First());
+          return java.util.Optional.of(new Case.First());
         }
         """,
         """
-        public Optional<Second> getAsSecond() {
-          if (getDiscriminator() != Discriminator.SECOND) {
-            return Optional.empty();
+        public java.util.Optional<Case.Second> getAsSecond() {
+          ...
+          return associatedValues$.map((t) -> {
+            return new Case.Second(t);
           }
-          Second._NativeParameters $nativeParameters = MyEnum.$getAsSecond(this.$memoryAddress());
-          return Optional.of(new Second($nativeParameters.arg0));
+          );
         }
         """,
         """
-        public Optional<Third> getAsThird() {
-          if (getDiscriminator() != Discriminator.THIRD) {
-            return Optional.empty();
+        public java.util.Optional<Case.Third> getAsThird(SwiftArena swiftArena) {
+          ...
+          return associatedValues$.map((t) -> {
+            return new Case.Third(t.$0, t.$1, t.$2);
           }
-          Third._NativeParameters $nativeParameters = MyEnum.$getAsThird(this.$memoryAddress());
-          return Optional.of(new Third($nativeParameters.x, $nativeParameters.y));
+          );
         }
         """,
       ]
@@ -305,39 +279,103 @@ struct JNIEnumTests {
       input: source,
       .jni,
       .swift,
-      detectChunkByInitialLines: 1,
+      detectChunkByInitialLines: 2,
       expectedChunks: [
         """
-        @_cdecl("Java_com_example_swift_MyEnum__00024getAsSecond__J")
-        public func Java_com_example_swift_MyEnum__00024getAsSecond__J(environment: UnsafeMutablePointer<JNIEnv?>!, thisClass: jclass, self: jlong) -> jobject? {
-          ...
-          guard case .second(let _0) = self$.pointee else {
-            fatalError("Expected enum case 'second', but was '\\(self$.pointee)'!")
+        extension MyEnum { 
+          fileprivate func getAsSecond() -> (String)? {
+            if case let .second(_0) = self {
+              return (_0)
+            }
+            return nil
           }
-          let cache$ = _JNI_MyEnum.myEnumSecondCache
-          let class$ = cache$.javaClass
-          let method$ = _JNIMethodIDCache.Method(name: "<init>", signature: "(Ljava/lang/String;)V")
-          let constructorID$ = cache$[method$]
-          let newObjectArgs$: [jvalue] = [jvalue(l: _0.getJNIValue(in: environment) ?? nil)]
-          return environment.interface.NewObjectA(environment, class$, constructorID$, newObjectArgs$)
         }
         """,
         """
-        @_cdecl("Java_com_example_swift_MyEnum__00024getAsThird__J")
-        public func Java_com_example_swift_MyEnum__00024getAsThird__J(environment: UnsafeMutablePointer<JNIEnv?>!, thisClass: jclass, self: jlong) -> jobject? {
-          ...
-          guard case .third(let x, let y) = self$.pointee else {
-            fatalError("Expected enum case 'third', but was '\\(self$.pointee)'!")
+        extension MyEnum {
+          fileprivate func getAsThird() -> (Int64, Int32, MyValue)? {
+            if case let .third(x, y, _2) = self {
+              return (x, y, _2)
+            }
+            return nil
           }
-          let cache$ = _JNI_MyEnum.myEnumThirdCache
-          let class$ = cache$.javaClass
-          let method$ = _JNIMethodIDCache.Method(name: "<init>", signature: "(JI)V")
-          let constructorID$ = cache$[method$]
-          let newObjectArgs$: [jvalue] = [jvalue(j: x.getJNIValue(in: environment)), jvalue(i: y.getJNIValue(in: environment))]
-          return environment.interface.NewObjectA(environment, class$, constructorID$, newObjectArgs$)
         }
         """,
+        """
+        public func Java_com_example_swift_MyEnum__00024getAsSecond__J_3B
+        """,
+        """
+        public func Java_com_example_swift_MyEnum__00024getAsThird__J_3B_3J_3I_3J
+        """,
+      ],
+      notExpectedChunks: [
+        "fileprivate func getAsFirst("
       ]
+    )
+  }
+
+  @Test
+  func nonGeneratesGetAsCase_swift() throws {
+    try assertOutput(
+      input: """
+        public enum MyEnum {
+          case first
+          case second
+        }
+        """,
+      .jni,
+      .swift,
+      detectChunkByInitialLines: 1,
+      expectedChunks: [],
+      notExpectedChunks: [
+        """
+        public func Java_com_example_swift_MyEnum__00024getAsFirst__J("
+        """,
+        """
+        public func Java_com_example_swift_MyEnum__00024getAsSecond__J(
+        """,
+      ]
+    )
+  }
+
+  @Test
+  func invalidRedeclaration() throws {
+    let input = """
+      public enum DeliveryStage : Swift.String, Swift.Sendable & Swift.Codable {
+        case schedule
+        case delivered
+        public init?(rawValue: Swift.String)
+        public typealias RawValue = Swift.String
+        public var rawValue: Swift.String {
+          get
+        }
+      }
+      """
+
+    var config = Configuration()
+    config.swiftModule = "SwiftModule"
+    let translator = Swift2JavaTranslator(config: config)
+    try! translator.analyze(path: "/fake/Fake.swiftinterface", text: input)
+
+    var printer: CodePrinter = CodePrinter(mode: .accumulateAll)
+    let generator = JNISwift2JavaGenerator(
+      config: config,
+      translator: translator,
+      javaPackage: "com.example.swift",
+      swiftOutputDirectory: "/fake",
+      javaOutputDirectory: "/fake",
+      javaClassLookupTable: [:],
+      moduleJavaPackages: [:]
+    )
+    try generator.writeSwiftThunkSources(&printer)
+    let output = printer.finalize()
+    let gotLines = output.components(separatedBy: .whitespacesAndNewlines)
+
+    #expect(
+      gotLines.count(where: { line in
+        line == #"@_cdecl("Java_com_example_swift_DeliveryStage__00024getRawValue__J")"#
+      }) == 1,
+      "Invalid redeclaration detected."
     )
   }
 }

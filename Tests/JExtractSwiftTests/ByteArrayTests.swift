@@ -16,6 +16,7 @@ import JExtractSwiftLib
 import SwiftJavaConfigurationShared
 import Testing
 
+@Suite
 final class ByteArrayTests {
 
   @Test(
@@ -103,7 +104,7 @@ final class ByteArrayTests {
            * void (void *, size_t)
            * }
            */
-          private static class $_result_initialize {
+          private static class result$initialize {
             @FunctionalInterface
             public interface Function {
               void apply(java.lang.foreign.MemorySegment _0, long _1);
@@ -134,9 +135,9 @@ final class ByteArrayTests {
           @Unsigned
           public static byte[] returnArray() {
             try(var arena$ = Arena.ofConfined()) {
-              var _result_initialize = new swiftjava_SwiftModule_returnArray.$_result_initialize.Function$Impl();
-              swiftjava_SwiftModule_returnArray.call(swiftjava_SwiftModule_returnArray.$_result_initialize.toUpcallStub(_result_initialize, arena$));
-              return _result_initialize.result;
+              var result$initialize = new swiftjava_SwiftModule_returnArray.result$initialize.Function$Impl();
+              swiftjava_SwiftModule_returnArray.call(swiftjava_SwiftModule_returnArray.result$initialize.toUpcallStub(result$initialize, arena$));
+              return result$initialize.result;
             }
           }
           """,
@@ -181,6 +182,113 @@ final class ByteArrayTests {
       mode,
       .swift,
       expectedChunks: expectedSwiftChunks
+    )
+  }
+
+  // ==== -----------------------------------------------------------------------
+  // MARK: JNI mode tests
+
+  @Test("Import: accept [UInt8] array (JNI)")
+  func func_accept_array_uint8_jni() throws {
+    let text = "public func acceptArray(array: [UInt8])"
+    try assertOutput(
+      input: text,
+      .jni,
+      .swift,
+      detectChunkByInitialLines: 2,
+      expectedChunks: [
+        """
+        @_cdecl("Java_com_example_swift_SwiftModule__00024acceptArray___3B")
+        public func Java_com_example_swift_SwiftModule__00024acceptArray___3B(environment: UnsafeMutablePointer<JNIEnv?>!, thisClass: jclass, array: jbyteArray?) {
+          SwiftModule.acceptArray(array: [UInt8](fromJNI: array, in: environment))
+        }
+        """
+      ]
+    )
+    try assertOutput(
+      input: text,
+      .jni,
+      .java,
+      detectChunkByInitialLines: 2,
+      expectedChunks: [
+        """
+        public static void acceptArray(@Unsigned byte[] array) {
+          SwiftModule.$acceptArray(Objects.requireNonNull(array, "array must not be null"));
+        }
+        """,
+        "private static native void $acceptArray(byte[] array);",
+      ]
+    )
+  }
+
+  @Test("Import: return [UInt8] array (JNI)")
+  func func_return_array_uint8_jni() throws {
+    let text = "public func returnArray() -> [UInt8]"
+    try assertOutput(
+      input: text,
+      .jni,
+      .swift,
+      detectChunkByInitialLines: 2,
+      expectedChunks: [
+        """
+        @_cdecl("Java_com_example_swift_SwiftModule__00024returnArray__")
+        public func Java_com_example_swift_SwiftModule__00024returnArray__(environment: UnsafeMutablePointer<JNIEnv?>!, thisClass: jclass) -> jbyteArray? {
+          return SwiftModule.returnArray().getJNILocalRefValue(in: environment)
+        }
+        """
+      ]
+    )
+    try assertOutput(
+      input: text,
+      .jni,
+      .java,
+      detectChunkByInitialLines: 2,
+      expectedChunks: [
+        """
+        @Unsigned
+        public static byte[] returnArray() {
+          return SwiftModule.$returnArray();
+        }
+        """,
+        "private static native byte[] $returnArray();",
+      ]
+    )
+  }
+
+  @Test("Import: accept UnsafeRawBufferPointer (JNI)")
+  func func_accept_unsafeRawBufferPointer_jni() throws {
+    let text = "public func receiveBuffer(data: UnsafeRawBufferPointer)"
+    try assertOutput(
+      input: text,
+      .jni,
+      .swift,
+      detectChunkByInitialLines: 2,
+      expectedChunks: [
+        """
+        @_cdecl("Java_com_example_swift_SwiftModule__00024receiveBuffer___3B")
+        public func Java_com_example_swift_SwiftModule__00024receiveBuffer___3B(environment: UnsafeMutablePointer<JNIEnv?>!, thisClass: jclass, data: jbyteArray?) {
+          let data$count = Int(environment.interface.GetArrayLength(environment, data))
+          let data$ptr = environment.interface.GetByteArrayElements(environment, data, nil)!
+          defer { environment.interface.ReleaseByteArrayElements(environment, data, data$ptr, jint(JNI_ABORT)) }
+          let data$rbp = UnsafeRawBufferPointer(start: data$ptr, count: data$count)
+          SwiftModule.receiveBuffer(data: data$rbp)
+        }
+        """
+      ]
+    )
+    try assertOutput(
+      input: text,
+      .jni,
+      .java,
+      detectChunkByInitialLines: 2,
+      expectedChunks: [
+        """
+        public static void receiveBuffer(byte[] data) {
+          SwiftModule.$receiveBuffer(data);
+        }
+        """,
+        "private static native void $receiveBuffer(byte[] data);",
+      ]
     )
   }
 }

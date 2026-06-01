@@ -28,19 +28,37 @@ struct SwiftModuleSymbolTable: SwiftSymbolTableProtocol {
   /// The top-level nominal types, found by name.
   var topLevelTypes: [String: SwiftNominalTypeDeclaration] = [:]
 
+  /// The top-level typealias declarations, found by name.
+  var topLevelTypeAliases: [String: SwiftTypeAliasDeclaration] = [:]
+
   /// The nested types defined within this module. The map itself is indexed by the
   /// identifier of the nominal type declaration, and each entry is a map from the nested
   /// type name to the nominal type declaration.
   var nestedTypes: [SwiftNominalTypeDeclaration: [String: SwiftNominalTypeDeclaration]] = [:]
+
+  /// The nested typealias declarations defined within this module. The map itself is indexed
+  /// by the nominal type declaration, and each entry is a map from the nested typealias
+  /// name to the typealias declaration.
+  var nestedTypeAliases: [SwiftNominalTypeDeclaration: [String: SwiftTypeAliasDeclaration]] = [:]
 
   /// Look for a top-level type with the given name.
   func lookupTopLevelNominalType(_ name: String) -> SwiftNominalTypeDeclaration? {
     topLevelTypes[name]
   }
 
+  /// Look for a top-level typealias with the given name.
+  func lookupTopLevelTypealias(_ name: String) -> SwiftTypeAliasDeclaration? {
+    topLevelTypeAliases[name]
+  }
+
   // Look for a nested type with the given name.
   func lookupNestedType(_ name: String, parent: SwiftNominalTypeDeclaration) -> SwiftNominalTypeDeclaration? {
     nestedTypes[parent]?[name]
+  }
+
+  // Look for a nested typealias with the given name.
+  func lookupNestedTypealias(_ name: String, parent: SwiftNominalTypeDeclaration) -> SwiftTypeAliasDeclaration? {
+    nestedTypeAliases[parent]?[name]
   }
 
   func isAlternative(for moduleName: String) -> Bool {

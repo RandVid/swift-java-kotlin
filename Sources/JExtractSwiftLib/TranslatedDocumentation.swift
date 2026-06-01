@@ -12,12 +12,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+import CodePrinting
+import SwiftJavaConfigurationShared
 import SwiftSyntax
 
 enum TranslatedDocumentation {
   static func printDocumentation(
     importedFunc: ImportedFunc,
     translatedDecl: FFMSwift2JavaGenerator.TranslatedFunctionDecl,
+    config: Configuration,
     in printer: inout CodePrinter
   ) {
     var documentation = SwiftDocumentationParser.parse(importedFunc.swiftDecl)
@@ -25,18 +28,19 @@ enum TranslatedDocumentation {
     if translatedDecl.translatedSignature.requiresSwiftArena {
       documentation?.parameters.append(
         SwiftDocumentation.Parameter(
-          name: "swiftArena$",
+          name: "swiftArena",
           description: "the arena that will manage the lifetime and allocation of Swift objects"
         )
       )
     }
 
-    printDocumentation(documentation, syntax: importedFunc.swiftDecl, in: &printer)
+    printDocumentation(documentation, syntax: importedFunc.swiftDecl, config: config, in: &printer)
   }
 
   static func printDocumentation(
     importedFunc: ImportedFunc,
     translatedDecl: JNISwift2JavaGenerator.TranslatedFunctionDecl,
+    config: Configuration,
     in printer: inout CodePrinter
   ) {
     var documentation = SwiftDocumentationParser.parse(importedFunc.swiftDecl)
@@ -44,18 +48,19 @@ enum TranslatedDocumentation {
     if translatedDecl.translatedFunctionSignature.requiresSwiftArena {
       documentation?.parameters.append(
         SwiftDocumentation.Parameter(
-          name: "swiftArena$",
+          name: "swiftArena",
           description: "the arena that the the returned object will be attached to"
         )
       )
     }
 
-    printDocumentation(documentation, syntax: importedFunc.swiftDecl, in: &printer)
+    printDocumentation(documentation, syntax: importedFunc.swiftDecl, config: config, in: &printer)
   }
 
   private static func printDocumentation(
     _ parsedDocumentation: SwiftDocumentation?,
     syntax: some DeclSyntaxProtocol,
+    config: Configuration,
     in printer: inout CodePrinter
   ) {
     var groups = [String]()
@@ -70,12 +75,13 @@ enum TranslatedDocumentation {
       }
     }
 
+    let signatureString = syntax.signatureString
     groups.append(
       """
       \(parsedDocumentation != nil ? "<p>" : "")Downcall to Swift:
-      {@snippet lang=swift :
-      \(syntax.signatureString)
-      }
+      \(config.javadocCodeSnippetStart(lang: "swift"))
+      \(signatureString)
+      \(config.javadocCodeSnippetEnd)
       """
     )
 
@@ -83,6 +89,10 @@ enum TranslatedDocumentation {
 
     for param in parsedDocumentation?.parameters ?? [] {
       annotationsGroup.append("@param \(param.name) \(param.description)")
+    }
+
+    if let throwsDescription = parsedDocumentation?.throwsDescription {
+      annotationsGroup.append("@throws Exception \(throwsDescription)")
     }
 
     if let returns = parsedDocumentation?.returns {

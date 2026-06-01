@@ -16,16 +16,17 @@ import Foundation
 import OrderedCollections
 import SwiftJavaConfigurationShared
 import SwiftJavaShared
+import SwiftParser
 import SwiftSyntax
 import SwiftSyntaxBuilder
 
 public struct SwiftToJava {
   let config: Configuration
-  let dependentConfigs: [Configuration]
+  let dependencyConfigs: [DependencyConfig]
 
-  public init(config: Configuration, dependentConfigs: [Configuration]) {
+  public init(config: Configuration, dependencyConfigs: [DependencyConfig]) {
     self.config = config
-    self.dependentConfigs = dependentConfigs
+    self.dependencyConfigs = dependencyConfigs
   }
 
   public func run() throws {
@@ -34,7 +35,6 @@ public struct SwiftToJava {
     }
 
     let translator = Swift2JavaTranslator(config: config)
-    translator.log.logLevel = config.logLevel ?? .info
     let log = translator.log
 
     if config.javaPackage == nil || config.javaPackage!.isEmpty {
@@ -51,7 +51,17 @@ public struct SwiftToJava {
     let inputPaths = inputSwift.split(separator: ",").map { URL(string: String($0))! }
     log.info("Input paths = \(inputPaths)")
 
-    let allFiles = collectAllFiles(suffix: ".swift", in: inputPaths, log: translator.log)
+    var allFiles: OrderedSet<URL> = []
+    for path in inputPaths {
+      if path.isDirectory {
+        allFiles.formUnion(collectAllFiles(suffix: ".swift", in: [path], log: translator.log))
+      } else {
+        allFiles.append(path)
+      }
+    }
+
+    let hasFilters =
+      !(config.swiftFilterInclude ?? []).isEmpty || !(config.swiftFilterExclude ?? []).isEmpty
 
     // Register files to the translator.
     let fileManager = FileManager.default
@@ -59,6 +69,17 @@ public struct SwiftToJava {
       guard canExtract(from: file) else {
         continue
       }
+
+      // Apply jextract include/exclude filters if configured
+      if hasFilters {
+        let relativePath = computeRelativePath(file: file, inputPaths: inputPaths)
+        guard shouldJExtractFile(relativePath: relativePath, config: config) else {
+          log.info("Skipping file (filtered out): \(file.path)")
+          translator.filteredOutPaths.append(file.path)
+          continue
+        }
+      }
+
       guard let data = fileManager.contents(atPath: file.path) else {
         continue
       }
@@ -75,13 +96,27 @@ public struct SwiftToJava {
       fatalError("Missing --output-java directory!")
     }
 
-    let wrappedJavaClassesLookupTable: JavaClassLookupTable = dependentConfigs.compactMap(\.classes).reduce(into: [:]) {
+    let wrappedJavaClassesLookupTable: JavaClassLookupTable = dependencyConfigs.compactMap(\.configuration.classes).reduce(into: [:]) {
       for (canonicalName, javaClass) in $1 {
         $0[javaClass] = canonicalName
       }
     }
 
-    translator.dependenciesClasses = Array(wrappedJavaClassesLookupTable.keys)
+    let moduleJavaPackages = dependencyConfigs.reduce(into: [String: String]()) { partialResult, dependency in
+      guard
+        let moduleName = dependency.swiftModuleName,
+        let javaPackage = dependency.configuration.javaPackage,
+        !javaPackage.isEmpty
+      else {
+        return
+      }
+      partialResult[moduleName] = javaPackage
+    }
+
+    translator.sourceDependencies.javaClasses = Array(wrappedJavaClassesLookupTable.keys)
+    for config in dependencyConfigs {
+      translator.sourceDependencies.loadSwiftSources(from: config, log: translator.log)
+    }
 
     try translator.analyze()
 
@@ -104,7 +139,8 @@ public struct SwiftToJava {
         javaPackage: config.javaPackage ?? "",
         swiftOutputDirectory: outputSwiftDirectory,
         javaOutputDirectory: outputJavaDirectory,
-        javaClassLookupTable: wrappedJavaClassesLookupTable
+        javaClassLookupTable: wrappedJavaClassesLookupTable,
+        moduleJavaPackages: moduleJavaPackages
       )
 
       try generator.generate()
@@ -123,17 +159,34 @@ public struct SwiftToJava {
     print("[swift-java] Imported Swift module '\(swiftModule)': " + "done.".green)
   }
 
-  func canExtract(from file: URL) -> Bool {
-    guard file.lastPathComponent.hasSuffix(".swift") || file.lastPathComponent.hasSuffix(".swiftinterface") else {
-      return false
-    }
-    if file.lastPathComponent.hasSuffix("+SwiftJava.swift") {
-      return false
+  /// Compute a relative path (sans `.swift` extension) for a file against the
+  /// input paths, suitable for jextract filter matching
+  func computeRelativePath(file: URL, inputPaths: [URL]) -> String {
+    let filePath = file.standardizedFileURL.path
+
+    for inputPath in inputPaths {
+      let basePath = inputPath.standardizedFileURL.path
+      let baseWithSlash = basePath.hasSuffix("/") ? basePath : basePath + "/"
+      if filePath.hasPrefix(baseWithSlash) {
+        let relative = String(filePath.dropFirst(baseWithSlash.count))
+        return relative
+      }
     }
 
-    return true
+    // Fallback: just the filename
+    return file.lastPathComponent
+  }
+}
+
+func canExtract(from file: URL) -> Bool {
+  guard file.lastPathComponent.hasSuffix(".swift") || file.lastPathComponent.hasSuffix(".swiftinterface") else {
+    return false
+  }
+  if file.lastPathComponent.hasSuffix("+SwiftJava.swift") {
+    return false
   }
 
+  return true
 }
 
 extension URL {

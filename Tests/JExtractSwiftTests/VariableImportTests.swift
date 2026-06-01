@@ -15,6 +15,7 @@
 import JExtractSwiftLib
 import Testing
 
+@Suite
 final class VariableImportTests {
   let class_interfaceFile =
     """
@@ -70,9 +71,15 @@ final class VariableImportTests {
          * public var counterInt: Int
          * }
          */
-        public long getCounterInt() {
+        public long getCounterInt() throws SwiftIntegerOverflowException {
           $ensureAlive();
-          return swiftjava_FakeModule_MySwiftClass_counterInt$get.call(this.$memorySegment());
+          long result$checked = swiftjava_FakeModule_MySwiftClass_counterInt$get.call(this.$memorySegment());
+          if (SwiftValueLayout.has32bitSwiftInt) {
+            if (result$checked < Integer.MIN_VALUE || result$checked > Integer.MAX_VALUE) {
+              throw new SwiftIntegerOverflowException("Return value overflow: " + result$checked);
+            }
+          }
+          return result$checked;
         }
         """,
         """
@@ -103,8 +110,13 @@ final class VariableImportTests {
          * public var counterInt: Int
          * }
          */
-        public void setCounterInt(long newValue) {
+        public void setCounterInt(long newValue) throws SwiftIntegerOverflowException {
           $ensureAlive();
+          if (SwiftValueLayout.has32bitSwiftInt) {
+            if (newValue < Integer.MIN_VALUE || newValue > Integer.MAX_VALUE) {
+              throw new SwiftIntegerOverflowException("Parameter 'newValue' overflow: " + newValue);
+            }
+          }
           swiftjava_FakeModule_MySwiftClass_counterInt$set.call(newValue, this.$memorySegment())
         }
         """,

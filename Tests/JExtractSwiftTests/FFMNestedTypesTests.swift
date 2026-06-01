@@ -16,6 +16,7 @@ import JExtractSwiftLib
 import SwiftJavaConfigurationShared
 import Testing
 
+@Suite
 final class FFMNestedTypesTests {
   let class_interfaceFile =
     """
@@ -37,7 +38,7 @@ final class FFMNestedTypesTests {
 
     try st.analyze(path: "Fake.swift", text: class_interfaceFile)
 
-    let generator = FFMSwift2JavaGenerator(
+    let _ = FFMSwift2JavaGenerator(
       config: config,
       translator: st,
       javaPackage: "com.example.swift",
@@ -45,10 +46,6 @@ final class FFMNestedTypesTests {
       javaOutputDirectory: "/fake"
     )
 
-    guard let ty = st.importedTypes["MyNamespace.MyNestedStruct"] else {
-      fatalError("Didn't import nested type!")
-    }
-
+    #expect(st.importedTypes["MyNamespace.MyNestedStruct"] != nil, "Didn't import nested type!")
   }
-
 }

@@ -15,8 +15,8 @@
 @_spi(Experimental) import SwiftLexicalLookup
 import SwiftSyntax
 
-/// Unqualified type lookup manager.
-/// All unqualified lookup should be done via this instance. This caches the
+/// Type lookup manager.
+/// All type lookups should be done via this instance. This caches the
 /// association of `Syntax.ID` to `SwiftTypeDeclaration`, and guarantees that
 /// there's only one `SwiftTypeDeclaration` per declaration `Syntax`.
 class SwiftTypeLookupContext {
@@ -24,8 +24,21 @@ class SwiftTypeLookupContext {
 
   private var typeDecls: [Syntax.ID: SwiftTypeDeclaration] = [:]
 
+  /// Set of typealias syntax ids currently being resolved, to break
+  /// cycles like `typealias A = B; typealias B = A`.
+  private var resolvingAliases: Set<Syntax.ID> = []
+
   init(symbolTable: SwiftSymbolTable) {
     self.symbolTable = symbolTable
+  }
+
+  /// Perform module-qualified type lookup in a specific module
+  ///
+  /// - Parameters:
+  ///   - name: name to lookup
+  ///   - moduleName: the module to look in
+  func moduleQualifiedLookup(name: String, in moduleName: String) -> SwiftTypeDeclaration? {
+    symbolTable.lookupTopLevelNominalType(name, inModule: moduleName)
   }
 
   /// Perform unqualified type lookup.
@@ -43,8 +56,15 @@ class SwiftTypeLookupContext {
         }
 
       case .lookForMembers(let scopeNode):
-        if let nominalDecl = try typeDeclaration(for: scopeNode, sourceFilePath: "FIXME.swift") { // FIXME: no path here // implement some node -> file
-          if let found = symbolTable.lookupNestedType(name.name, parent: nominalDecl as! SwiftNominalTypeDeclaration) {
+        if let typeDecl = try typeDeclaration(for: scopeNode, sourceFilePath: "FIXME.swift") { // FIXME: no path here // implement some node -> file
+          guard let nominalDecl = typeDecl as? SwiftNominalTypeDeclaration else {
+            // Member lookup on a non-nominal (e.g. a typealias) is not supported here.
+            continue
+          }
+          if let found = symbolTable.lookupNestedType(name.name, parent: nominalDecl) {
+            return found
+          }
+          if let found = symbolTable.lookupNestedTypealias(name.name, parent: nominalDecl) {
             return found
           }
         }
@@ -60,8 +80,12 @@ class SwiftTypeLookupContext {
       }
     }
 
+    // maybe it's a typealias, can we resolve it to a known type?
+    if let nominal = symbolTable.lookupTopLevelNominalType(name.name) {
+      return nominal
+    }
     // Fallback to global symbol table lookup.
-    return symbolTable.lookupTopLevelNominalType(name.name)
+    return symbolTable.lookupTopLevelTypealias(name.name)
   }
 
   /// Find the first type declaration in the `LookupName` results.
@@ -110,18 +134,29 @@ class SwiftTypeLookupContext {
     case .protocolDecl(let node):
       typeDecl = try nominalTypeDeclaration(for: node, sourceFilePath: sourceFilePath)
     case .extensionDecl(let node):
-      // For extensions, we have to perform a unqualified lookup,
-      // as the extentedType is just the identifier of the type.
+      // For extensions, we need to resolve the extended type to find the
+      // actual nominal type declaration. The extended type might be a simple
+      // identifier (e.g. `extension Foo`) or a member type
+      // (e.g. `extension Outer.Inner`).
 
-      guard case .identifierType(let id) = Syntax(node.extendedType).as(SyntaxEnum.self),
+      if case .identifierType(let id) = Syntax(node.extendedType).as(SyntaxEnum.self),
         let lookupResult = try unqualifiedLookup(name: Identifier(id.name)!, from: node)
-      else {
-        throw TypeLookupError.notType(Syntax(node))
+      {
+        typeDecl = lookupResult
+      } else {
+        // For member types (e.g. Outer.Inner), resolve through SwiftType
+        let swiftType = try SwiftType(node.extendedType, lookupContext: self)
+        guard let nominalDecl = swiftType.asNominalTypeDeclaration else {
+          throw TypeLookupError.notType(Syntax(node))
+        }
+        typeDecl = nominalDecl
       }
-
-      typeDecl = lookupResult
-    case .typeAliasDecl:
-      fatalError("typealias not implemented")
+    case .typeAliasDecl(let node):
+      typeDecl = SwiftTypeAliasDeclaration(
+        sourceFilePath: sourceFilePath,
+        moduleName: symbolTable.moduleName,
+        node: node
+      )
     case .associatedTypeDecl:
       fatalError("associatedtype not implemented")
     default:
@@ -146,6 +181,7 @@ class SwiftTypeLookupContext {
     }
 
     return SwiftNominalTypeDeclaration(
+      name: node.name.text,
       sourceFilePath: sourceFilePath,
       moduleName: self.symbolTable.moduleName,
       parent: try parentTypeDecl(for: node),
@@ -168,6 +204,17 @@ class SwiftTypeLookupContext {
       }
     }
     return nil
+  }
+
+  /// Resolve a typealias to the `SwiftType` of its right-hand side.
+  func resolve(typeAlias decl: SwiftTypeAliasDeclaration) throws -> SwiftType {
+    let id = decl.syntax.id
+    guard !resolvingAliases.contains(id) else {
+      throw TypeTranslationError.unimplementedType(TypeSyntax(decl.syntax.initializer.value))
+    }
+    resolvingAliases.insert(id)
+    defer { resolvingAliases.remove(id) }
+    return try SwiftType(decl.syntax.initializer.value, lookupContext: self)
   }
 }
 

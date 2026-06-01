@@ -61,15 +61,32 @@ extension SwiftJava {
 
     @Option(help: "If specified, a single Swift file will be generated containing all the generated code")
     var singleSwiftFileOutput: String?
+
+    @Option(name: .long, help: "While scanning a classpath, inspect ONLY types included in these packages")
+    var filterInclude: [String] = []
+
+    @Option(
+      name: .long,
+      help:
+        "While scanning a classpath, skip types which match the filter prefix. You can exclude specific methods by using the `com.example.MyClass#method` format."
+    )
+    var filterExclude: [String] = []
+
+    @Option(name: .customLong("android-api-version-file"), help: "Path to Android api-versions.xml for generating @available attributes based on API level data")
+    var androidAPIVersionFile: String?
   }
 }
 
 extension SwiftJava.WrapJavaCommand {
+  struct NamedDependencyConfig {
+    let swiftModuleName: String
+    let configuration: Configuration
+  }
 
   mutating func runSwiftJavaCommand(config: inout Configuration) async throws {
-    print("self.commonOptions.filterInclude = \(self.commonOptions.filterInclude)")
-    configure(&config.filterInclude, append: self.commonOptions.filterInclude)
-    configure(&config.filterExclude, append: self.commonOptions.filterExclude)
+    print("self.filterInclude = \(self.filterInclude)")
+    configure(&config.javaFilterInclude, append: self.filterInclude)
+    configure(&config.javaFilterExclude, append: self.filterExclude)
     configure(&config.singleSwiftFileOutput, overrideWith: self.singleSwiftFileOutput)
 
     // Get base classpath configuration for this target and configuration
@@ -87,24 +104,24 @@ extension SwiftJava.WrapJavaCommand {
       log: Self.log
     )
 
-    // Load all of the dependent configurations and associate them with Swift modules.
-    let dependentConfigs = try loadDependentConfigs(dependsOn: self.dependsOn).map { moduleName, config in
-      guard let moduleName else {
+    // Load all of the dependency configurations and associate them with Swift modules.
+    let dependencyConfigs = try parseDependsOnSyntax(dependsOn: self.dependsOn).map { dependencyConfig in
+      guard let moduleName = dependencyConfig.swiftModuleName else {
         throw JavaToSwiftError.badConfigOption(self.dependsOn.joined(separator: " "))
       }
-      return (moduleName, config)
+      return NamedDependencyConfig(swiftModuleName: moduleName, configuration: dependencyConfig.configuration)
     }
-    print("[debug][swift-java] Dependent configs: \(dependentConfigs.count)")
+    print("[debug][swift-java] Dependency configs: \(dependencyConfigs.count)")
 
     // Include classpath entries which libs we depend on require...
-    for (fromModule, config) in dependentConfigs {
+    for dependencyConfig in dependencyConfigs {
       print(
-        "[trace][swift-java] Add dependent config (\(fromModule)) classpath elements: \(config.classpathEntries.count)"
+        "[trace][swift-java] Add dependency config (\(dependencyConfig.swiftModuleName)) classpath elements: \(dependencyConfig.configuration.classpathEntries.count)"
       )
-      // TODO: may need to resolve the dependent configs rather than just get their configs
+      // TODO: may need to resolve the dependency configs rather than just get their configs
       // TODO: We should cache the resolved classpaths as well so we don't do it many times
-      for entry in config.classpathEntries {
-        print("[trace][swift-java] Add dependent config (\(fromModule)) classpath element: \(entry)")
+      for entry in dependencyConfig.configuration.classpathEntries {
+        print("[trace][swift-java] Add dependency config (\(dependencyConfig.swiftModuleName)) classpath element: \(entry)")
         classpathEntries.append(entry)
       }
     }
@@ -114,7 +131,7 @@ extension SwiftJava.WrapJavaCommand {
     try self.generateWrappers(
       config: config,
       // classpathEntries: classpathEntries,
-      dependentConfigs: dependentConfigs,
+      dependencyConfigs: dependencyConfigs,
       environment: jvm.environment()
     )
   }
@@ -124,7 +141,7 @@ extension SwiftJava.WrapJavaCommand {
 
   mutating func generateWrappers(
     config: Configuration,
-    dependentConfigs: [(String, Configuration)],
+    dependencyConfigs: [NamedDependencyConfig],
     environment: JNIEnvironment
   ) throws {
     let translator = JavaTranslator(
@@ -134,18 +151,26 @@ extension SwiftJava.WrapJavaCommand {
       translateAsClass: true
     )
 
-    log.info("Active include filters: \(config.filterInclude ?? [])")
-    log.info("Active exclude filters: \(config.filterExclude ?? [])")
+    log.info("Active include filters: \(config.javaFilterInclude ?? [])")
+    log.info("Active exclude filters: \(config.javaFilterExclude ?? [])")
 
     // Keep track of all of the Java classes that will have
     // Swift-native implementations.
     translator.swiftNativeImplementations = Set(swiftNativeImplementation)
 
-    // Note all of the dependent configurations.
-    for (swiftModuleName, dependentConfig) in dependentConfigs {
+    // Load Android API version data if provided.
+    if let androidAPIVersionFile {
+      let url = URL(fileURLWithPath: androidAPIVersionFile)
+      let apiVersions = try AndroidAPIVersionsParser.parse(contentsOf: url, log: Self.log)
+      translator.androidAPIVersions = apiVersions
+      log.info("Loaded Android API versions: \(apiVersions.stats())")
+    }
+
+    // Note all of the dependency configurations.
+    for dependencyConfig in dependencyConfigs {
       translator.addConfiguration(
-        dependentConfig,
-        forSwiftModule: swiftModuleName
+        dependencyConfig.configuration,
+        forSwiftModule: dependencyConfig.swiftModuleName
       )
     }
 
@@ -344,7 +369,7 @@ extension SwiftJava.WrapJavaCommand {
 
   private func shouldImportJavaClass(_ javaClassName: String, config: Configuration) -> Bool {
     // If we have an inclusive filter, import only types from it
-    if let includes = config.filterInclude, !includes.isEmpty {
+    if let includes = config.javaFilterInclude, !includes.isEmpty {
       let anyIncludeFilterMatched = includes.contains { include in
         if javaClassName.starts(with: include) {
           // TODO: lower to trace level
@@ -361,7 +386,7 @@ extension SwiftJava.WrapJavaCommand {
       }
     }
     // If we have an exclude filter, check for it as well
-    for exclude in config.filterExclude ?? [] {
+    for exclude in config.javaFilterExclude ?? [] {
       if javaClassName.starts(with: exclude) {
         log.info("Skip Java type: \(javaClassName) (does match exclude filter: \(exclude))")
         return false

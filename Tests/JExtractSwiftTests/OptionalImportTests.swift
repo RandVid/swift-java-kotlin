@@ -15,6 +15,7 @@
 import JExtractSwiftLib
 import Testing
 
+@Suite
 final class OptionalImportTests {
   let interfaceFile =
     """
@@ -146,7 +147,7 @@ final class OptionalImportTests {
          * public func receiveOptionalDataProto(_ arg: (some DataProtocol)?)
          * }
          */
-        public static void receiveOptionalDataProto(Optional<Data> arg) {
+        public static void receiveOptionalDataProto(java.util.Optional<Data> arg) {
           swiftjava_SwiftModule_receiveOptionalDataProto__.call(SwiftRuntime.toOptionalSegmentInstance(arg));
         }
         """,

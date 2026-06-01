@@ -12,10 +12,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+import CodePrinting
 import JExtractSwiftLib
 import SwiftJavaConfigurationShared
 import Testing
 
+@Suite
 final class MethodImportTests {
   let class_interfaceFile =
     """
@@ -82,7 +84,7 @@ final class MethodImportTests {
       javaOutputDirectory: "/fake"
     )
 
-    let funcDecl = st.importedGlobalFuncs.first { $0.name == "helloWorld" }!
+    let funcDecl = try #require(st.importedGlobalFuncs.first { $0.name == "helloWorld" })
 
     let output = CodePrinter.toString { printer in
       generator.printJavaBindingWrapperMethod(&printer, funcDecl)
@@ -116,9 +118,11 @@ final class MethodImportTests {
 
     try st.analyze(path: "Fake.swift", text: class_interfaceFile)
 
-    let funcDecl = st.importedGlobalFuncs.first {
-      $0.name == "globalTakeInt"
-    }!
+    let funcDecl = try #require(
+      st.importedGlobalFuncs.first {
+        $0.name == "globalTakeInt"
+      }
+    )
 
     let generator = FFMSwift2JavaGenerator(
       config: config,
@@ -142,7 +146,12 @@ final class MethodImportTests {
          * public func globalTakeInt(i: Int)
          * }
          */
-        public static void globalTakeInt(long i) {
+        public static void globalTakeInt(long i) throws SwiftIntegerOverflowException {
+            if (SwiftValueLayout.has32bitSwiftInt) {
+                if (i < Integer.MIN_VALUE || i > Integer.MAX_VALUE) {
+                    throw new SwiftIntegerOverflowException("Parameter 'i' overflow: " + i);
+                }
+            }
             swiftjava___FakeModule_globalTakeInt_i.call(i);
         }
         """
@@ -158,9 +167,11 @@ final class MethodImportTests {
 
     try st.analyze(path: "Fake.swift", text: class_interfaceFile)
 
-    let funcDecl = st.importedGlobalFuncs.first {
-      $0.name == "globalTakeIntLongString"
-    }!
+    let funcDecl = try #require(
+      st.importedGlobalFuncs.first {
+        $0.name == "globalTakeIntLongString"
+      }
+    )
 
     let generator = FFMSwift2JavaGenerator(
       config: config,
@@ -186,7 +197,7 @@ final class MethodImportTests {
          */
         public static void globalTakeIntLongString(int i32, long l, java.lang.String s) {
             try(var arena$ = Arena.ofConfined()) {
-                swiftjava___FakeModule_globalTakeIntLongString_i32_l_s.call(i32, l, SwiftRuntime.toCString(s, arena$));
+                swiftjava___FakeModule_globalTakeIntLongString_i32_l_s.call(i32, l, SwiftStrings.toCString(s, arena$));
             }
         }
         """
@@ -202,9 +213,11 @@ final class MethodImportTests {
 
     try st.analyze(path: "Fake.swift", text: class_interfaceFile)
 
-    let funcDecl = st.importedGlobalFuncs.first {
-      $0.name == "globalReturnClass"
-    }!
+    let funcDecl = try #require(
+      st.importedGlobalFuncs.first {
+        $0.name == "globalReturnClass"
+      }
+    )
 
     let generator = FFMSwift2JavaGenerator(
       config: config,
@@ -228,10 +241,10 @@ final class MethodImportTests {
          * public func globalReturnClass() -> MySwiftClass
          * }
          */
-        public static MySwiftClass globalReturnClass(AllocatingSwiftArena swiftArena$) {
-          MemorySegment _result = swiftArena$.allocate(MySwiftClass.$LAYOUT);
-          swiftjava___FakeModule_globalReturnClass.call(_result);
-          return MySwiftClass.wrapMemoryAddressUnsafe(_result, swiftArena$);
+        public static MySwiftClass globalReturnClass(AllocatingSwiftArena swiftArena) {
+          MemorySegment result$ = swiftArena.allocate(MySwiftClass.$LAYOUT);
+          swiftjava___FakeModule_globalReturnClass.call(result$);
+          return MySwiftClass.wrapMemoryAddressUnsafe(result$, swiftArena);
         }
         """
     )
@@ -246,9 +259,11 @@ final class MethodImportTests {
 
     try st.analyze(path: "Fake.swift", text: class_interfaceFile)
 
-    let funcDecl = st.importedGlobalFuncs.first {
-      $0.name == "swapRawBufferPointer"
-    }!
+    let funcDecl = try #require(
+      st.importedGlobalFuncs.first {
+        $0.name == "swapRawBufferPointer"
+      }
+    )
 
     let generator = FFMSwift2JavaGenerator(
       config: config,
@@ -274,10 +289,10 @@ final class MethodImportTests {
          */
         public static java.lang.foreign.MemorySegment swapRawBufferPointer(java.lang.foreign.MemorySegment buffer) {
           try(var arena$ = Arena.ofConfined()) {
-            MemorySegment _result_pointer = arena$.allocate(SwiftValueLayout.SWIFT_POINTER);
-            MemorySegment _result_count = arena$.allocate(SwiftValueLayout.SWIFT_INT64);
-            swiftjava___FakeModule_swapRawBufferPointer_buffer.call(buffer, buffer.byteSize(), _result_pointer, _result_count);
-            return _result_pointer.get(SwiftValueLayout.SWIFT_POINTER, 0).reinterpret(_result_count.get(SwiftValueLayout.SWIFT_INT64, 0));
+            MemorySegment result$_pointer = arena$.allocate(SwiftValueLayout.SWIFT_POINTER);
+            MemorySegment result$_count = arena$.allocate(SwiftValueLayout.SWIFT_INT64);
+            swiftjava___FakeModule_swapRawBufferPointer_buffer.call(buffer, buffer.byteSize(), result$_pointer, result$_count);
+            return result$_pointer.get(SwiftValueLayout.SWIFT_POINTER, 0).reinterpret(result$_count.get(SwiftValueLayout.SWIFT_INT64, 0));
           }
         }
         """
@@ -293,9 +308,11 @@ final class MethodImportTests {
 
     try st.analyze(path: "Fake.swift", text: class_interfaceFile)
 
-    let funcDecl: ImportedFunc = st.importedTypes["MySwiftClass"]!.methods.first {
-      $0.name == "helloMemberFunction"
-    }!
+    let funcDecl: ImportedFunc = try #require(
+      st.importedTypes["MySwiftClass"]!.methods.first {
+        $0.name == "helloMemberFunction"
+      }
+    )
 
     let generator = FFMSwift2JavaGenerator(
       config: config,
@@ -336,9 +353,11 @@ final class MethodImportTests {
 
     try st.analyze(path: "Fake.swift", text: class_interfaceFile)
 
-    let funcDecl: ImportedFunc = st.importedTypes["MySwiftClass"]!.methods.first {
-      $0.name == "makeInt"
-    }!
+    let funcDecl: ImportedFunc = try #require(
+      st.importedTypes["MySwiftClass"]!.methods.first {
+        $0.name == "makeInt"
+      }
+    )
 
     let generator = FFMSwift2JavaGenerator(
       config: config,
@@ -362,9 +381,15 @@ final class MethodImportTests {
          * public func makeInt() -> Int
          * }
          */
-        public long makeInt() {
+        public long makeInt() throws SwiftIntegerOverflowException {
             $ensureAlive();
-            return swiftjava___FakeModule_MySwiftClass_makeInt.call(this.$memorySegment());
+            long result$checked = swiftjava___FakeModule_MySwiftClass_makeInt.call(this.$memorySegment());
+            if (SwiftValueLayout.has32bitSwiftInt) {
+                if (result$checked < Integer.MIN_VALUE || result$checked > Integer.MAX_VALUE) {
+                    throw new SwiftIntegerOverflowException("Return value overflow: " + result$checked);
+                }
+            }
+            return result$checked;
         }
         """
     )
@@ -379,9 +404,11 @@ final class MethodImportTests {
 
     try st.analyze(path: "Fake.swift", text: class_interfaceFile)
 
-    let initDecl: ImportedFunc = st.importedTypes["MySwiftClass"]!.initializers.first {
-      $0.name == "init"
-    }!
+    let initDecl: ImportedFunc = try #require(
+      st.importedTypes["MySwiftClass"]!.initializers.first {
+        $0.name == "init"
+      }
+    )
 
     let generator = FFMSwift2JavaGenerator(
       config: config,
@@ -405,10 +432,18 @@ final class MethodImportTests {
          * public init(len: Swift.Int, cap: Swift.Int)
          * }
          */
-        public static MySwiftClass init(long len, long cap, AllocatingSwiftArena swiftArena$) {
-            MemorySegment _result = swiftArena$.allocate(MySwiftClass.$LAYOUT);
-            swiftjava___FakeModule_MySwiftClass_init_len_cap.call(len, cap, _result)
-            return MySwiftClass.wrapMemoryAddressUnsafe(_result, swiftArena$);
+        public static MySwiftClass init(long len, long cap, AllocatingSwiftArena swiftArena) throws SwiftIntegerOverflowException {
+            MemorySegment result$ = swiftArena.allocate(MySwiftClass.$LAYOUT);
+            if (SwiftValueLayout.has32bitSwiftInt) {
+                if (len < Integer.MIN_VALUE || len > Integer.MAX_VALUE) {
+                    throw new SwiftIntegerOverflowException("Parameter 'len' overflow: " + len);
+                }
+                if (cap < Integer.MIN_VALUE || cap > Integer.MAX_VALUE) {
+                    throw new SwiftIntegerOverflowException("Parameter 'cap' overflow: " + cap);
+                }
+            }
+            swiftjava___FakeModule_MySwiftClass_init_len_cap.call(len, cap, result$)
+            return MySwiftClass.wrapMemoryAddressUnsafe(result$, swiftArena);
         }
         """
     )
@@ -424,9 +459,11 @@ final class MethodImportTests {
 
     try st.analyze(path: "Fake.swift", text: class_interfaceFile)
 
-    let initDecl: ImportedFunc = st.importedTypes["MySwiftStruct"]!.initializers.first {
-      $0.name == "init"
-    }!
+    let initDecl: ImportedFunc = try #require(
+      st.importedTypes["MySwiftStruct"]!.initializers.first {
+        $0.name == "init"
+      }
+    )
 
     let generator = FFMSwift2JavaGenerator(
       config: config,
@@ -450,10 +487,18 @@ final class MethodImportTests {
          * public init(len: Swift.Int, cap: Swift.Int)
          * }
          */
-        public static MySwiftStruct init(long len, long cap, AllocatingSwiftArena swiftArena$) {
-            MemorySegment _result = swiftArena$.allocate(MySwiftStruct.$LAYOUT);
-            swiftjava___FakeModule_MySwiftStruct_init_len_cap.call(len, cap, _result)
-            return MySwiftStruct.wrapMemoryAddressUnsafe(_result, swiftArena$);
+        public static MySwiftStruct init(long len, long cap, AllocatingSwiftArena swiftArena) throws SwiftIntegerOverflowException {
+            MemorySegment result$ = swiftArena.allocate(MySwiftStruct.$LAYOUT);
+            if (SwiftValueLayout.has32bitSwiftInt) {
+                if (len < Integer.MIN_VALUE || len > Integer.MAX_VALUE) {
+                    throw new SwiftIntegerOverflowException("Parameter 'len' overflow: " + len);
+                }
+                if (cap < Integer.MIN_VALUE || cap > Integer.MAX_VALUE) {
+                    throw new SwiftIntegerOverflowException("Parameter 'cap' overflow: " + cap);
+                }
+            }
+            swiftjava___FakeModule_MySwiftStruct_init_len_cap.call(len, cap, result$)
+            return MySwiftStruct.wrapMemoryAddressUnsafe(result$, swiftArena);
         }
         """
     )
@@ -473,6 +518,262 @@ final class MethodImportTests {
         $0.name == "globalReturnAny"
       },
       "'Any' return type is not supported yet"
+    )
+  }
+
+  // ==== -------------------------------------------------------------------
+  // MARK: FFM overloaded method disambiguation
+
+  let overloaded_interfaceFile =
+    """
+    import Swift
+
+    public func takeValue(a: Swift.String) -> Swift.Int
+    public func takeValue(b: Swift.String) -> Swift.Int
+    public func takeValue(_ c: Swift.String) -> Swift.Int
+    public func uniqueFunc(x: Swift.Int) -> Swift.Int
+    public func overloaded(a: Swift.Int) -> Swift.Int
+    public func overloaded(a: Swift.String) -> Swift.Int
+
+    public class OverloadedClass {
+      public func bar(a: Swift.String)
+      public func bar(b: Swift.String)
+      public func unique(x: Swift.Int)
+    }
+    """
+
+  @Test("FFM: Overloaded global functions get suffixed Java names")
+  func ffm_overloaded_global_functions_suffixed() throws {
+    try assertOutput(
+      input: overloaded_interfaceFile,
+      .ffm,
+      .java,
+      swiftModuleName: "OverloadModule",
+      expectedChunks: [
+        "public static long takeValueA(java.lang.String a)",
+        "public static long takeValueB(java.lang.String b)",
+        "public static long takeValue(java.lang.String c)",
+      ]
+    )
+  }
+
+  @Test("FFM: Non-overloaded functions keep clean names")
+  func ffm_non_overloaded_functions_clean_names() throws {
+    try assertOutput(
+      input: overloaded_interfaceFile,
+      .ffm,
+      .java,
+      swiftModuleName: "OverloadModule",
+      expectedChunks: [
+        "public static long uniqueFunc(long x)"
+      ],
+      notExpectedChunks: [
+        "public static long uniqueFunc_x("
+      ]
+    )
+  }
+
+  @Test("FFM: Same name but different types — no suffix needed")
+  func ffm_overloaded_different_types_no_suffix() throws {
+    try assertOutput(
+      input: overloaded_interfaceFile,
+      .ffm,
+      .java,
+      swiftModuleName: "OverloadModule",
+      expectedChunks: [
+        "public static long overloaded(long a)",
+        "public static long overloaded(java.lang.String a)",
+      ],
+      notExpectedChunks: [
+        "public static long overloaded_a("
+      ]
+    )
+  }
+
+  @Test("FFM: Overloaded methods on a type get suffixed Java names")
+  func ffm_overloaded_methods_on_type_suffixed() throws {
+    try assertOutput(
+      input: overloaded_interfaceFile,
+      .ffm,
+      .java,
+      swiftModuleName: "OverloadModule",
+      expectedChunks: [
+        "public void barA(java.lang.String a)",
+        "public void barB(java.lang.String b)",
+      ]
+    )
+  }
+
+  @Test("FFM: Non-overloaded method on a type keeps clean name")
+  func ffm_non_overloaded_method_on_type_clean_name() throws {
+    try assertOutput(
+      input: overloaded_interfaceFile,
+      .ffm,
+      .java,
+      swiftModuleName: "OverloadModule",
+      expectedChunks: [
+        "public void unique(long x)"
+      ],
+      notExpectedChunks: [
+        "public void unique_x("
+      ]
+    )
+  }
+
+  let propertyMethodConflict_interfaceFile =
+    """
+    import Swift
+
+    public class MyClass {
+      public var name: Swift.Int { get }
+      public func getName() -> Swift.Int
+    }
+    """
+
+  @Test("FFM: Property getter and method with same Java name are disambiguated")
+  func ffm_property_getter_vs_method_conflict() throws {
+    try assertOutput(
+      input: propertyMethodConflict_interfaceFile,
+      .ffm,
+      .java,
+      swiftModuleName: "ConflictModule",
+      expectedChunks: [
+        // Property getter keeps standard Java bean name
+        "public long getName()",
+        // Method gets a trailing underscore to avoid the conflict
+        "public long getName_()",
+      ]
+    )
+  }
+
+  let argumentLabel_interfaceFile =
+    """
+    import Swift
+
+    public func takeValue(outer name: Swift.String) -> Swift.Int
+    public func takeValue(another name: Swift.String) -> Swift.Int
+    """
+
+  @Test("FFM: Overloaded functions with argument labels use label for suffix")
+  func ffm_overloaded_argument_labels() throws {
+    try assertOutput(
+      input: argumentLabel_interfaceFile,
+      .ffm,
+      .java,
+      swiftModuleName: "LabelModule",
+      expectedChunks: [
+        "public static long takeValueOuter(java.lang.String name)",
+        "public static long takeValueAnother(java.lang.String name)",
+      ]
+    )
+  }
+
+  // ==== -------------------------------------------------------------------
+  // MARK: JNI overloaded method disambiguation
+
+  @Test("JNI: Overloaded global functions get suffixed Java names")
+  func jni_overloaded_global_functions_suffixed() throws {
+    try assertOutput(
+      input: overloaded_interfaceFile,
+      .jni,
+      .java,
+      swiftModuleName: "OverloadModule",
+      expectedChunks: [
+        "public static long takeValueA(java.lang.String a)",
+        "public static long takeValueB(java.lang.String b)",
+        "public static long takeValue(java.lang.String c)",
+      ]
+    )
+  }
+
+  @Test("JNI: Non-overloaded functions keep clean names")
+  func jni_non_overloaded_functions_clean_names() throws {
+    try assertOutput(
+      input: overloaded_interfaceFile,
+      .jni,
+      .java,
+      swiftModuleName: "OverloadModule",
+      expectedChunks: [
+        "public static long uniqueFunc(long x)"
+      ],
+      notExpectedChunks: [
+        "public static long uniqueFunc_x("
+      ]
+    )
+  }
+
+  @Test("JNI: Same name but different types — no suffix needed")
+  func jni_overloaded_different_types_no_suffix() throws {
+    try assertOutput(
+      input: overloaded_interfaceFile,
+      .jni,
+      .java,
+      swiftModuleName: "OverloadModule",
+      expectedChunks: [
+        "public static long overloaded(long a)",
+        "public static long overloaded(java.lang.String a)",
+      ],
+      notExpectedChunks: [
+        "public static long overloaded_a("
+      ]
+    )
+  }
+
+  @Test("JNI: Overloaded methods on a type get suffixed Java names")
+  func jni_overloaded_methods_on_type_suffixed() throws {
+    try assertOutput(
+      input: overloaded_interfaceFile,
+      .jni,
+      .java,
+      swiftModuleName: "OverloadModule",
+      expectedChunks: [
+        "public void barA(java.lang.String a)",
+        "public void barB(java.lang.String b)",
+      ]
+    )
+  }
+
+  @Test("JNI: Non-overloaded method on a type keeps clean name")
+  func jni_non_overloaded_method_on_type_clean_name() throws {
+    try assertOutput(
+      input: overloaded_interfaceFile,
+      .jni,
+      .java,
+      swiftModuleName: "OverloadModule",
+      expectedChunks: [
+        "public void unique(long x)"
+      ],
+      notExpectedChunks: [
+        "public void unique_x("
+      ]
+    )
+  }
+
+  @Test("JNI: Property getter and method with same Java name are disambiguated")
+  func jni_property_getter_vs_method_conflict() throws {
+    try assertOutput(
+      input: propertyMethodConflict_interfaceFile,
+      .jni,
+      .java,
+      swiftModuleName: "ConflictModule",
+      expectedChunks: [
+        "public long getName()",
+        "public long getName_()",
+      ]
+    )
+  }
+
+  @Test("JNI: Overloaded functions with argument labels use label for suffix")
+  func jni_overloaded_argument_labels() throws {
+    try assertOutput(
+      input: argumentLabel_interfaceFile,
+      .jni,
+      .java,
+      swiftModuleName: "LabelModule",
+      expectedChunks: [
+        "public static long takeValueOuter(java.lang.String name)",
+        "public static long takeValueAnother(java.lang.String name)",
+      ]
     )
   }
 }

@@ -29,7 +29,7 @@ repositories {
 
 java {
     toolchain {
-        languageVersion.set(JavaLanguageVersion.of(25))
+        languageVersion.set(JavaLanguageVersion.of((gradle.extra.properties["swiftJavaJdk"] as? Int) ?: 25))
     }
 }
 
@@ -80,7 +80,7 @@ application {
     applicationDefaultJvmArgs = listOf(
         "--enable-native-access=ALL-UNNAMED",
         // Include the library paths where our dylibs are that we want to load and call
-        "-Djava.library.path=" + (javaLibraryPaths(rootDir) + javaLibraryPaths(project.projectDir)).joinToString(":"),
+        "-Djava.library.path=" + javaLibraryPaths(project.projectDir).joinToString(File.pathSeparator),
         // Enable tracing downcalls (to Swift)
         "-Djextract.trace.downcalls=true"
     )
@@ -95,7 +95,7 @@ jmh {
 
     jvmArgsAppend = listOf(
         "--enable-native-access=ALL-UNNAMED",
-        "-Djava.library.path=" + (javaLibraryPaths(rootDir) + javaLibraryPaths(project.projectDir)).joinToString(":"),
+        "-Djava.library.path=" + javaLibraryPaths(project.projectDir).joinToString(File.pathSeparator),
         // Enable tracing downcalls (to Swift)
         "-Djextract.trace.downcalls=false"
     )

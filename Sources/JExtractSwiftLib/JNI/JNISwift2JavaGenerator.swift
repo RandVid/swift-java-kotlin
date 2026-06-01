@@ -12,12 +12,16 @@
 //
 //===----------------------------------------------------------------------===//
 
-import JavaTypes
+import CodePrinting
 import SwiftJavaConfigurationShared
+import SwiftJavaJNICore
 
 /// A table that where keys are Swift class names and the values are
 /// the fully qualified canoical names.
 package typealias JavaClassLookupTable = [String: String]
+
+/// A table where keys are Swift module names and the values are Java package names.
+package typealias ModuleJavaPackages = [String: String]
 
 package class JNISwift2JavaGenerator: Swift2JavaGenerator {
 
@@ -31,6 +35,7 @@ package class JNISwift2JavaGenerator: Swift2JavaGenerator {
   let lookupContext: SwiftTypeLookupContext
 
   let javaClassLookupTable: JavaClassLookupTable
+  let moduleJavaPackages: ModuleJavaPackages
 
   var javaPackagePath: String {
     javaPackage.replacingOccurrences(of: ".", with: "/")
@@ -38,10 +43,18 @@ package class JNISwift2JavaGenerator: Swift2JavaGenerator {
 
   var thunkNameRegistry = ThunkNameRegistry()
 
+  /// Accumulates every ``@_cdecl`` symbol name emitted during thunk printing.
+  /// Written to a linker version script after generation when
+  /// ``Configuration/linkerExportListOutput`` is set.
+  var generatedCDeclSymbolNames: [String] = []
+
   /// Cached Java translation result. 'nil' indicates failed translation.
   var translatedDecls: [ImportedFunc: TranslatedFunctionDecl] = [:]
   var translatedEnumCases: [ImportedEnumCase: TranslatedEnumCase] = [:]
   var interfaceProtocolWrappers: [ImportedNominalType: JavaInterfaceSwiftWrapper] = [:]
+
+  /// Duplicate identifier tracking for the current batch of methods being generated.
+  var currentJavaIdentifiers: JavaIdentifierFactory = JavaIdentifierFactory()
 
   /// Because we need to write empty files for SwiftPM, keep track which files we didn't write yet,
   /// and write an empty file for those.
@@ -56,7 +69,8 @@ package class JNISwift2JavaGenerator: Swift2JavaGenerator {
     javaPackage: String,
     swiftOutputDirectory: String,
     javaOutputDirectory: String,
-    javaClassLookupTable: JavaClassLookupTable
+    javaClassLookupTable: JavaClassLookupTable,
+    moduleJavaPackages: ModuleJavaPackages,
   ) {
     self.config = config
     self.logger = Logger(label: "jni-generator", logLevel: translator.log.logLevel)
@@ -66,22 +80,36 @@ package class JNISwift2JavaGenerator: Swift2JavaGenerator {
     self.swiftOutputDirectory = swiftOutputDirectory
     self.javaOutputDirectory = javaOutputDirectory
     self.javaClassLookupTable = javaClassLookupTable
+    self.moduleJavaPackages = moduleJavaPackages
     self.lookupContext = translator.lookupContext
 
     // If we are forced to write empty files, construct the expected outputs.
     // It is sufficient to use file names only, since SwiftPM requires names to be unique within a module anyway.
-    if translator.config.writeEmptyFiles ?? false {
+    if translator.config.effectiveWriteEmptyFiles {
       self.expectedOutputSwiftFileNames = Set(
         translator.inputs.compactMap { (input) -> String? in
           guard let fileName = input.path.split(separator: PATH_SEPARATOR).last else {
             return nil
           }
-          guard fileName.hasSuffix(".swift") else {
-            return nil
+          if fileName.hasSuffix(".swift") {
+            return String(fileName.replacing(".swift", with: "+SwiftJava.swift"))
+          } else if fileName.hasSuffix(".swiftinterface") {
+            return String(fileName.replacing(".swiftinterface", with: "+SwiftJava.swift"))
           }
-          return String(fileName.replacing(".swift", with: "+SwiftJava.swift"))
+          return nil
         }
       )
+      // Also include filtered-out files so SwiftPM gets the empty outputs it expects
+      for path in translator.filteredOutPaths {
+        guard let fileName = path.split(separator: PATH_SEPARATOR).last else {
+          continue
+        }
+        if fileName.hasSuffix(".swift") {
+          self.expectedOutputSwiftFileNames.insert(
+            String(fileName.replacing(".swift", with: "+SwiftJava.swift"))
+          )
+        }
+      }
       self.expectedOutputSwiftFileNames.insert("\(translator.swiftModuleName)Module+SwiftJava.swift")
       self.expectedOutputSwiftFileNames.insert("Foundation+SwiftJava.swift")
     } else {
@@ -99,6 +127,7 @@ package class JNISwift2JavaGenerator: Swift2JavaGenerator {
   func generate() throws {
     try writeSwiftThunkSources()
     try writeExportedJavaSources()
+    try writeLinkerExportList()
 
     let pendingFileCount = self.expectedOutputSwiftFileNames.count
     if pendingFileCount > 0 {
@@ -111,5 +140,14 @@ package class JNISwift2JavaGenerator: Swift2JavaGenerator {
 extension JNISwift2JavaGenerator {
   static func indirectVariableName(for parameterName: String) -> String {
     "\(parameterName)$indirect"
+  }
+
+  func inheritedProtocols(of type: ImportedNominalType) -> [ImportedNominalType] {
+    type.inheritedTypes
+      .compactMap(\.asNominalTypeDeclaration)
+      .filter { $0.kind == .protocol }
+      .compactMap {
+        self.analysis.importedTypes[$0.qualifiedName]
+      }
   }
 }

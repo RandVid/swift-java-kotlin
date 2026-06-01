@@ -1,0 +1,257 @@
+//===----------------------------------------------------------------------===//
+//
+// This source file is part of the Swift.org open source project
+//
+// Copyright (c) 2024 Apple Inc. and the Swift.org project authors
+// Licensed under Apache License v2.0
+//
+// See LICENSE.txt for license information
+// See CONTRIBUTORS.txt for the list of Swift.org project authors
+//
+// SPDX-License-Identifier: Apache-2.0
+//
+//===----------------------------------------------------------------------===//
+
+import SwiftJavaMacros
+import SwiftSyntax
+import SwiftSyntaxBuilder
+import SwiftSyntaxMacros
+import SwiftSyntaxMacrosTestSupport
+import XCTest
+
+class JavaImplementationMacroTests: XCTestCase {
+  static let javaImplementationMacros: [String: any Macro.Type] = [
+    "JavaImplementation": JavaImplementationMacro.self,
+    "JavaMethod": JavaMethodMacro.self,
+  ]
+
+  func testJNIIdentifierEscaping() throws {
+    assertMacroExpansion(
+      """
+      @JavaImplementation("org.swift.example.Hello_World")
+      extension HelloWorld {
+        @JavaMethod
+        func test_method() -> Int32 {
+          return 42
+        }
+      }
+      """,
+      expandedSource: """
+
+        extension HelloWorld {
+          func test_method() -> Int32 {
+              return 42
+          }
+        }
+
+        #if compiler(>=6.3)
+        @used
+        #endif
+        @_cdecl("Java_org_swift_example_Hello_1World_test_1method")
+        public func __macro_local_22HelloWorld_test_methodfMu_(environment: UnsafeMutablePointer<JNIEnv?>!, thisObj: jobject) -> Int32.JNIType {
+          let obj = HelloWorld(javaThis: thisObj, environment: environment!)
+          return obj.test_method()
+          .getJNILocalRefValue(in: environment)
+        }
+        """,
+      macros: Self.javaImplementationMacros
+    )
+  }
+
+  func testJNIIdentifierEscapingWithDots() throws {
+    assertMacroExpansion(
+      """
+      @JavaImplementation("com.example.test.MyClass")
+      extension MyClass {
+        @JavaMethod
+        func simpleMethod() -> Int32 {
+          return 1
+        }
+      }
+      """,
+      expandedSource: """
+
+        extension MyClass {
+          func simpleMethod() -> Int32 {
+              return 1
+          }
+        }
+
+        #if compiler(>=6.3)
+        @used
+        #endif
+        @_cdecl("Java_com_example_test_MyClass_simpleMethod")
+        public func __macro_local_20MyClass_simpleMethodfMu_(environment: UnsafeMutablePointer<JNIEnv?>!, thisObj: jobject) -> Int32.JNIType {
+          let obj = MyClass(javaThis: thisObj, environment: environment!)
+          return obj.simpleMethod()
+          .getJNILocalRefValue(in: environment)
+        }
+        """,
+      macros: Self.javaImplementationMacros
+    )
+  }
+
+  func testJNIIdentifierEscapingStaticMethod() throws {
+    assertMacroExpansion(
+      """
+      @JavaImplementation("org.example.Utils")
+      extension Utils {
+        @JavaMethod
+        static func static_helper(environment: JNIEnvironment) -> String {
+          return "hello"
+        }
+      }
+      """,
+      expandedSource: """
+
+        extension Utils {
+          static func static_helper(environment: JNIEnvironment) -> String {
+              return "hello"
+          }
+        }
+
+        #if compiler(>=6.3)
+        @used
+        #endif
+        @_cdecl("Java_org_example_Utils_static_1helper")
+        public func __macro_local_19Utils_static_helperfMu_(environment: UnsafeMutablePointer<JNIEnv?>!, thisClass: jclass) -> String.JNIType {
+          return Utils.static_helper(environment: environment)
+          .getJNILocalRefValue(in: environment)
+        }
+        """,
+      macros: Self.javaImplementationMacros
+    )
+  }
+
+  func testJNIIdentifierEscapingMultipleMethods() throws {
+    assertMacroExpansion(
+      """
+      @JavaImplementation("test.Class_With_Underscores")
+      extension ClassWithUnderscores {
+        @JavaMethod
+        func method_one() -> Int32 {
+          return 1
+        }
+
+        @JavaMethod
+        func method_two() -> Int32 {
+          return 2
+        }
+      }
+      """,
+      expandedSource: """
+
+        extension ClassWithUnderscores {
+          func method_one() -> Int32 {
+              return 1
+          }
+          func method_two() -> Int32 {
+              return 2
+          }
+        }
+
+        #if compiler(>=6.3)
+        @used
+        #endif
+        @_cdecl("Java_test_Class_1With_1Underscores_method_1one")
+        public func __macro_local_31ClassWithUnderscores_method_onefMu_(environment: UnsafeMutablePointer<JNIEnv?>!, thisObj: jobject) -> Int32.JNIType {
+          let obj = ClassWithUnderscores(javaThis: thisObj, environment: environment!)
+          return obj.method_one()
+          .getJNILocalRefValue(in: environment)
+        }
+
+        #if compiler(>=6.3)
+        @used
+        #endif
+        @_cdecl("Java_test_Class_1With_1Underscores_method_1two")
+        public func __macro_local_31ClassWithUnderscores_method_twofMu_(environment: UnsafeMutablePointer<JNIEnv?>!, thisObj: jobject) -> Int32.JNIType {
+          let obj = ClassWithUnderscores(javaThis: thisObj, environment: environment!)
+          return obj.method_two()
+          .getJNILocalRefValue(in: environment)
+        }
+        """,
+      macros: Self.javaImplementationMacros
+    )
+  }
+
+  func testJNIIdentifierEscapingWithJavaMethodNameOverride() throws {
+    assertMacroExpansion(
+      """
+      @JavaImplementation("org.swift.swiftkit.core.collections.SwiftDictionaryMap")
+      extension SwiftDictionaryMapJava {
+        @JavaMethod("$size")
+        public static func _size(environment: UnsafeMutablePointer<JNIEnv?>!, pointer: Int64) -> Int32 {
+          return 42
+        }
+
+        @JavaMethod("$destroy")
+        public static func _destroy(environment: UnsafeMutablePointer<JNIEnv?>!, pointer: Int64) {
+          // cleanup
+        }
+      }
+      """,
+      expandedSource: """
+
+        extension SwiftDictionaryMapJava {
+          public static func _size(environment: UnsafeMutablePointer<JNIEnv?>!, pointer: Int64) -> Int32 {
+              return 42
+          }
+          public static func _destroy(environment: UnsafeMutablePointer<JNIEnv?>!, pointer: Int64) {
+            // cleanup
+          }
+        }
+
+        #if compiler(>=6.3)
+        @used
+        #endif
+        @_cdecl("Java_org_swift_swiftkit_core_collections_SwiftDictionaryMap__00024size")
+        public func __macro_local_28SwiftDictionaryMapJava__sizefMu_(environment: UnsafeMutablePointer<JNIEnv?>!, thisClass: jclass, pointer: Int64.JNIType) -> Int32.JNIType {
+          return SwiftDictionaryMapJava._size(environment: environment, pointer: Int64(fromJNI: pointer, in: environment!))
+          .getJNILocalRefValue(in: environment)
+        }
+
+        #if compiler(>=6.3)
+        @used
+        #endif
+        @_cdecl("Java_org_swift_swiftkit_core_collections_SwiftDictionaryMap__00024destroy")
+        public func __macro_local_31SwiftDictionaryMapJava__destroyfMu_(environment: UnsafeMutablePointer<JNIEnv?>!, thisClass: jclass, pointer: Int64.JNIType) {
+          return SwiftDictionaryMapJava._destroy(environment: environment, pointer: Int64(fromJNI: pointer, in: environment!))
+        }
+        """,
+      macros: Self.javaImplementationMacros
+    )
+  }
+
+  func testJNIIdentifierEscapingVoidReturn() throws {
+    assertMacroExpansion(
+      """
+      @JavaImplementation("org.example.Processor")
+      extension Processor {
+        @JavaMethod
+        func process_data() {
+          // do nothing
+        }
+      }
+      """,
+      expandedSource: """
+
+        extension Processor {
+          func process_data() {
+            // do nothing
+          }
+        }
+
+        #if compiler(>=6.3)
+        @used
+        #endif
+        @_cdecl("Java_org_example_Processor_process_1data")
+        public func __macro_local_22Processor_process_datafMu_(environment: UnsafeMutablePointer<JNIEnv?>!, thisObj: jobject) {
+          let obj = Processor(javaThis: thisObj, environment: environment!)
+          return obj.process_data()
+        }
+        """,
+      macros: Self.javaImplementationMacros
+    )
+  }
+
+}

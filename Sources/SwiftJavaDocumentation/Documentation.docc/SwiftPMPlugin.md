@@ -9,18 +9,9 @@ The `SwiftJavaPlugin` automates `swift-java` command line tool invocations durin
 To install the SwiftPM plugin in your target of choice include the `swift-java` package dependency:
 
 ```swift
-import Foundation
+// swift-tools-version: 6.3
 
-let javaHome = findJavaHome()
-
-let javaIncludePath = "\(javaHome)/include"
-#if os(Linux)
-  let javaPlatformIncludePath = "\(javaIncludePath)/linux"
-#elseif os(macOS)
-  let javaPlatformIncludePath = "\(javaIncludePath)/darwin"
-#elseif os(Windows)
-  let javaPlatformIncludePath = "\(javaIncludePath)/win32"
-#endif
+import PackageDescription
 
 let package = Package(
   name: "MyProject",
@@ -34,7 +25,7 @@ let package = Package(
   ],
 
   dependencies: [
-    .package(url: "https://github.com/apple/swift-java", from: "..."),
+    .package(url: "https://github.com/swiftlang/swift-java", from: "..."),
   ],
 
   targets: [
@@ -44,9 +35,11 @@ let package = Package(
         // ...
       ],
       swiftSettings: [
-        .unsafeFlags(["-I\(javaIncludePath)", "-I\(javaPlatformIncludePath)"])
+        // Some swift-java generated code is not yet compatible with swift 6
+        .swiftLanguageMode(.v5)
       ],
       plugins: [
+        // Include here the plugins you need
         .plugin(name: "JavaCompilerPlugin", package: "swift-java"),
         .plugin(name: "JExtractSwiftPlugin", package: "swift-java"),
         .plugin(name: "SwiftJavaPlugin", package: "swift-java"),
@@ -56,71 +49,15 @@ let package = Package(
 )
 ```
 
-```swift
+> Note: Depending on the use case, swift-java may require running Gradle or accessing files outside the Swift package. Ensure that your environment allows Gradle to run, and add the `--disable-sandbox` parameter when invoking the `swift build` command to build the package.
 
-// Note: the JAVA_HOME environment variable must be set to point to where
-// Java is installed, e.g.,
-//   Library/Java/JavaVirtualMachines/openjdk-21.jdk/Contents/Home.
-func findJavaHome() -> String {
-  if let home = ProcessInfo.processInfo.environment["JAVA_HOME"] {
-    print("JAVA_HOME = \(home)")
-    return home
-  }
+### Handling cross module Swift type dependencies
 
-  // This is a workaround for envs (some IDEs) which have trouble with
-  // picking up env variables during the build process
-  let path = "\(FileManager.default.homeDirectoryForCurrentUser.path()).java_home"
-  if let home = try? String(contentsOfFile: path, encoding: .utf8) {
-    if let lastChar = home.last, lastChar.isNewline {
-      return String(home.dropLast())
-    }
+Sometimes you may be wanting to treat a specific module with swift-java jextract and expose it to Java, only to find
+that it is also exposing types from other modules.
 
-    return home
-  }
-    
-  if let home = getJavaHomeFromLibexecJavaHome(),
-     !home.isEmpty {
-    return home
-  }
+In this situation it is best to also add a `swift-java.config` configuration into the other module, 
+and configure it appropriately. Next, when you run the plugin in the main module, it will automatically
+pick up the dependency (since your Swift module depends on the other one) and detect there is swift-java configuration there.
 
-  fatalError("Please set the JAVA_HOME environment variable to point to where Java is installed.")
-}
-
-/// On MacOS we can use the java_home tool as a fallback if we can't find JAVA_HOME environment variable.
-func getJavaHomeFromLibexecJavaHome() -> String? {
-    let task = Process()
-    task.executableURL = URL(fileURLWithPath: "/usr/libexec/java_home")
-
-    // Check if the executable exists before trying to run it
-    guard FileManager.default.fileExists(atPath: task.executableURL!.path) else {
-        print("/usr/libexec/java_home does not exist")
-        return nil
-    }
-
-    let pipe = Pipe()
-    task.standardOutput = pipe
-    task.standardError = pipe // Redirect standard error to the same pipe for simplicity
-
-    do {
-        try task.run()
-        task.waitUntilExit()
-
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if task.terminationStatus == 0 {
-            return output
-        } else {
-            print("java_home terminated with status: \(task.terminationStatus)")
-            // Optionally, log the error output for debugging
-            if let errorOutput = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) {
-                print("Error output: \(errorOutput)")
-            }
-            return nil
-        }
-    } catch {
-        print("Error running java_home: \(error)")
-        return nil
-    }
-}
-```
+This informs the source generator about the location and package of the generated sources and allows it to compile the generated sources in your main module.

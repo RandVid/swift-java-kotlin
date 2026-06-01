@@ -17,7 +17,7 @@ import SwiftSyntax
 /// Any imported (Swift) declaration
 protocol ImportedDecl: AnyObject {}
 
-package enum SwiftAPIKind {
+package enum SwiftAPIKind: Equatable {
   case function
   case initializer
   case getter
@@ -29,8 +29,17 @@ package enum SwiftAPIKind {
 
 /// Describes a Swift nominal type (e.g., a class, struct, enum) that has been
 /// imported and is being translated into Java.
+///
+/// When `base` is non-nil, this is a specialization of a generic type
+/// (e.g. `FishBox` specializing `Box<Element>` with `Element` = `Fish`).
+/// The specialization delegates its member collections to the base type
+/// so that extensions discovered later are visible through all specializations.
 package final class ImportedNominalType: ImportedDecl {
   let swiftNominal: SwiftNominalTypeDeclaration
+
+  /// If this type is a specialization (FishTank), then this points at the Tank base type of the specialization.
+  /// His allows simplified
+  package let specializationBaseType: ImportedNominalType?
 
   // The short path from module root to the file in which this nominal was originally declared.
   // E.g. for `Sources/Example/My/Types.swift` it would be `My/Types.swift`.
@@ -38,6 +47,7 @@ package final class ImportedNominalType: ImportedDecl {
     self.swiftNominal.sourceFilePath
   }
 
+  // Backing storage for member collections
   package var initializers: [ImportedFunc] = []
   package var methods: [ImportedFunc] = []
   package var variables: [ImportedFunc] = []
@@ -45,44 +55,178 @@ package final class ImportedNominalType: ImportedDecl {
   var inheritedTypes: [SwiftType]
   package var parent: SwiftNominalTypeDeclaration?
 
+  /// The Swift base type name, e.g. "Box" — always the unparameterized name
+  package var baseTypeName: String { swiftNominal.qualifiedName }
+
+  /// The specialized/Java-facing name, e.g. "FishBox" — nil for base types
+  package private(set) var specializedTypeName: String?
+
+  /// Whether this type is a specialization of a generic type
+  package var isSpecialization: Bool { specializationBaseType != nil }
+
+  /// Generic parameter names (e.g. ["Element"] for Box<Element>). Empty for non-generic types
+  package var genericParameterNames: [String] {
+    swiftNominal.genericParameters.map(\.name)
+  }
+
+  /// Maps generic parameter -> concrete type argument. Empty for unspecialized types
+  /// e.g. {"Element": "Fish"} for FishBox
+  package var genericArguments: [String: String] = [:]
+
+  /// True when all generic parameters have corresponding arguments
+  package var isFullySpecialized: Bool {
+    !genericParameterNames.isEmpty && genericParameterNames.allSatisfy { genericArguments.keys.contains($0) }
+  }
+
   init(swiftNominal: SwiftNominalTypeDeclaration, lookupContext: SwiftTypeLookupContext) throws {
     self.swiftNominal = swiftNominal
+    self.specializationBaseType = nil
     self.inheritedTypes =
       swiftNominal.inheritanceTypes?.compactMap {
         try? SwiftType($0.type, lookupContext: lookupContext)
       } ?? []
     self.parent = swiftNominal.parent
+    self.swiftType = swiftNominal.asSwiftType
   }
 
-  var swiftType: SwiftType {
-    .nominal(.init(nominalTypeDecl: swiftNominal))
+  /// Init for creating a specialization
+  private init(base: ImportedNominalType, specializedTypeName: String, genericArguments: [String: String]) {
+    self.swiftNominal = base.swiftNominal
+    self.specializationBaseType = base
+
+    let selfType = SwiftType.nominal(
+      SwiftNominalType(
+        parent: swiftNominal.parent?.asSwiftNominalType,
+        nominalTypeDecl: SwiftNominalTypeDeclaration(
+          name: specializedTypeName,
+          sourceFilePath: swiftNominal.sourceFilePath,
+          moduleName: swiftNominal.moduleName,
+          parent: swiftNominal.parent,
+          node: swiftNominal.syntax
+        ),
+        genericArguments: []
+      )
+    )
+    self.initializers = base.initializers.map { $0.clone(for: selfType) }
+    self.methods = base.methods.map { $0.clone(for: selfType) }
+    self.variables = base.variables.map { $0.clone(for: selfType) }
+    self.cases = base.cases.map { $0.clone(for: selfType) }
+    self.inheritedTypes = base.inheritedTypes
+    self.parent = base.parent
+
+    self.specializedTypeName = specializedTypeName
+    self.genericArguments = genericArguments
+    self.swiftType = selfType
+  }
+
+  let swiftType: SwiftType
+
+  /// Structured Java-facing type name — "FishBox" for specialized, "Box" for base
+  package var effectiveJavaTypeName: SwiftQualifiedTypeName {
+    if let specializedTypeName {
+      return SwiftQualifiedTypeName(specializedTypeName)
+    }
+    return swiftNominal.qualifiedTypeName
+  }
+
+  /// The effective Java-facing name — "FishBox" for specialized, "Box" for base
+  var effectiveJavaName: String {
+    effectiveJavaTypeName.fullName
+  }
+
+  /// The simple Java class name (no qualification) for file naming purposes
+  var effectiveJavaSimpleName: String {
+    specializedTypeName ?? swiftNominal.name
+  }
+
+  /// The Swift type for thunk generation — "Box<Fish>" for specialized, "Box" for base
+  /// Computed from baseTypeName + genericArguments
+  var effectiveSwiftTypeName: String {
+    guard !genericArguments.isEmpty else { return baseTypeName }
+    let orderedArgs = genericParameterNames.compactMap { genericArguments[$0] }
+    guard !orderedArgs.isEmpty else { return baseTypeName }
+    return "\(baseTypeName)<\(orderedArgs.joined(separator: ", "))>"
   }
 
   var qualifiedName: String {
     self.swiftNominal.qualifiedName
   }
+
+  /// The Java generic clause, e.g. "<Element>" for generic base types, "" for specialized or non-generic
+  var javaGenericClause: String {
+    if isSpecialization {
+      ""
+    } else if genericParameterNames.isEmpty {
+      ""
+    } else {
+      "<\(genericParameterNames.joined(separator: ", "))>"
+    }
+  }
+
+  /// Create a specialized version of this generic type
+  package func specialize(
+    as specializedName: String,
+    with substitutions: [String: String],
+  ) throws -> ImportedNominalType {
+    guard !genericParameterNames.isEmpty else {
+      throw SpecializationError(
+        message: "Unable to specialize non-generic type '\(baseTypeName)' as '\(specializedName)'"
+      )
+    }
+    let missingParams = genericParameterNames.filter { substitutions[$0] == nil }
+    guard missingParams.isEmpty else {
+      throw SpecializationError(
+        message: "Missing type arguments for: \(missingParams) when specializing \(baseTypeName) as \(specializedName)"
+      )
+    }
+    return ImportedNominalType(
+      base: self,
+      specializedTypeName: specializedName,
+      genericArguments: substitutions,
+    )
+  }
+
+  /// Checks if this type, or any of types it inherits from, conforms to the passed in protocol.
+  package func conformsTo(_ protocolName: String, in importedTypes: [String: ImportedNominalType]) -> Bool {
+    var visited: Set<ObjectIdentifier> = []
+    var queue: [ImportedNominalType] = [self]
+    while let current = queue.popLast() {
+      for inherited in current.inheritedTypes {
+        guard let name = inherited.asNominalTypeDeclaration?.name else { continue }
+        if name == protocolName { return true }
+        if let next = importedTypes[name], visited.insert(ObjectIdentifier(next)).inserted {
+          queue.append(next)
+        }
+      }
+    }
+    return false
+  }
+}
+
+struct SpecializationError: Error {
+  let message: String
 }
 
 public final class ImportedEnumCase: ImportedDecl, CustomStringConvertible {
   /// The case name
-  public var name: String
+  public let name: String
 
   /// The enum parameters
-  var parameters: [SwiftEnumCaseParameter]
+  let parameters: [SwiftEnumCaseParameter]
 
-  var swiftDecl: any DeclSyntaxProtocol
+  let swiftDecl: any DeclSyntaxProtocol
 
-  var enumType: SwiftNominalType
+  let enumType: SwiftNominalType
 
   /// A function that represents the Swift static "initializer" for cases
-  var caseFunction: ImportedFunc
+  let caseFunction: ImportedFunc
 
   init(
     name: String,
     parameters: [SwiftEnumCaseParameter],
     swiftDecl: any DeclSyntaxProtocol,
     enumType: SwiftNominalType,
-    caseFunction: ImportedFunc
+    caseFunction: ImportedFunc,
   ) {
     self.name = name
     self.parameters = parameters
@@ -102,6 +246,16 @@ public final class ImportedEnumCase: ImportedDecl, CustomStringConvertible {
     }
     """
   }
+
+  func clone(for parent: SwiftType) -> ImportedEnumCase {
+    ImportedEnumCase(
+      name: name,
+      parameters: parameters,
+      swiftDecl: swiftDecl,
+      enumType: enumType,
+      caseFunction: caseFunction.clone(for: parent)
+    )
+  }
 }
 
 extension ImportedEnumCase: Hashable {
@@ -115,43 +269,24 @@ extension ImportedEnumCase: Hashable {
 
 public final class ImportedFunc: ImportedDecl, CustomStringConvertible {
   /// Swift module name (e.g. the target name where a type or function was declared)
-  public var module: String
+  public let module: String
 
   /// The function name.
   /// e.g., "init" for an initializer or "foo" for "foo(a:b:)".
-  public var name: String
+  public let name: String
 
-  public var swiftDecl: any DeclSyntaxProtocol
+  public let swiftDecl: any DeclSyntaxProtocol
 
-  package var apiKind: SwiftAPIKind
+  package let apiKind: SwiftAPIKind
 
-  var functionSignature: SwiftFunctionSignature
+  let functionSignature: SwiftFunctionSignature
 
   public var signatureString: String {
     self.swiftDecl.signatureString
   }
 
   var parentType: SwiftType? {
-    guard let selfParameter = functionSignature.selfParameter else {
-      return nil
-    }
-    switch selfParameter {
-    case .instance(let parameter):
-      return parameter.type
-    case .staticMethod(let type):
-      return type
-    case .initializer(let type):
-      return type
-    }
-  }
-
-  /// If this function type uses types that require any additional `import` statements,
-  /// these would be exported here.
-  var additionalJavaImports: Set<String> {
-    var imports: Set<String> = []
-    //    imports += self.functionSignature.parameters.flatMap { $0.additionalJavaImports }
-    //    imports += self.functionSignature.result.additionalJavaImports
-    return imports
+    functionSignature.selfParameter?.selfType
   }
 
   var isStatic: Bool {
@@ -210,7 +345,7 @@ public final class ImportedFunc: ImportedDecl, CustomStringConvertible {
     swiftDecl: any DeclSyntaxProtocol,
     name: String,
     apiKind: SwiftAPIKind,
-    functionSignature: SwiftFunctionSignature
+    functionSignature: SwiftFunctionSignature,
   ) {
     self.module = module
     self.name = name
@@ -228,6 +363,19 @@ public final class ImportedFunc: ImportedDecl, CustomStringConvertible {
       signature: \(self.swiftDecl.signatureString)
     }
     """
+  }
+
+  func clone(for parent: SwiftType) -> ImportedFunc {
+    var functionSignature = functionSignature
+    assert(functionSignature.selfParameter?.selfType != nil)
+    functionSignature.selfParameter?.selfType = parent
+    return ImportedFunc(
+      module: module,
+      swiftDecl: swiftDecl,
+      name: name,
+      apiKind: apiKind,
+      functionSignature: functionSignature
+    )
   }
 }
 

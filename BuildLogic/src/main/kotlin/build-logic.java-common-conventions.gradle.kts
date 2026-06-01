@@ -23,7 +23,7 @@ plugins {
 
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(25)
+        languageVersion = JavaLanguageVersion.of((gradle.extra.properties["swiftJavaJdk"] as? Int) ?: 25)
     }
 }
 
@@ -81,9 +81,23 @@ fun javaLibraryPaths(rootDir: File): List<String> {
 
     val debugBuildOutputPaths = swiftBuildOutputPaths.map { "$it/debug" }
     val releaseBuildOutputPaths = swiftBuildOutputPaths.map { "$it/release" }
+
+    // swift-build layout (https://github.com/swiftlang/swift-build/issues/1363):
+    // .build/out/Products/<Config>[-<os>]/ — no triple, different config casing,
+    // OS suffix on Linux
+    val swiftBuildSystemConfigs = if (isLinux) {
+        listOf("Debug-linux", "Release-linux")
+    } else {
+        listOf("Debug", "Release")
+    }
+    val swiftBuildSystemRoots = listOf("$base.build/out/Products", "../../$base.build/out/Products")
+    val swiftBuildSystemPaths = swiftBuildSystemRoots.flatMap { root ->
+        swiftBuildSystemConfigs.map { config -> "$root/$config" }
+    }
+
     val swiftRuntimePaths = getSwiftRuntimeLibraryPaths()
 
-    return debugBuildOutputPaths + releaseBuildOutputPaths + swiftRuntimePaths
+    return debugBuildOutputPaths + releaseBuildOutputPaths + swiftBuildSystemPaths + swiftRuntimePaths
 }
 
 // Configure paths for native (Swift) libraries
@@ -92,9 +106,7 @@ tasks.test {
         "--enable-native-access=ALL-UNNAMED",
 
         // Include the library paths where our dylibs are that we want to load and call
-        "-Djava.library.path=" +
-                (javaLibraryPaths(rootDir) + javaLibraryPaths(project.projectDir))
-                    .joinToString(File.pathSeparator)
+        "-Djava.library.path=" + javaLibraryPaths(project.projectDir).joinToString(File.pathSeparator)
     )
 }
 
@@ -102,4 +114,9 @@ tasks.withType<Test> {
     this.testLogging {
         this.showStandardStreams = true
     }
+}
+
+// Validate javadoc for html/syntax/reference correctness but skip "missing" (no comment) warnings
+tasks.withType<Javadoc> {
+    (options as StandardJavadocDocletOptions).addStringOption("Xdoclint:all,-missing", "-quiet")
 }

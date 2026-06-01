@@ -16,6 +16,7 @@ import JExtractSwiftLib
 import SwiftJavaConfigurationShared
 import Testing
 
+@Suite
 final class UnsignedNumberTests {
 
   @Test(
@@ -107,11 +108,8 @@ final class UnsignedNumberTests {
     ]
   )
   func unsignedIntAnnotate(mode: JExtractGenerationMode, expectedChunks: [String]) throws {
-    var config = Configuration()
-
     try assertOutput(
       input: "public func unsignedInt(_ arg: UInt32)",
-      config: config,
       mode,
       .java,
       detectChunkByInitialLines: 2,
@@ -161,11 +159,8 @@ final class UnsignedNumberTests {
     ]
   )
   func returnUnsignedIntDefault(mode: JExtractGenerationMode, expectedChunks: [String]) throws {
-    let config = Configuration()
-
     try assertOutput(
       input: "public func returnUnsignedInt() -> UInt32",
-      config: config,
       mode,
       .java,
       detectChunkByInitialLines: 2,
@@ -215,11 +210,8 @@ final class UnsignedNumberTests {
     ]
   )
   func return_unsignedLong_annotate(mode: JExtractGenerationMode, expectedChunks: [String]) throws {
-    var config = Configuration()
-
     try assertOutput(
       input: "public func returnUnsignedLong() -> UInt64",
-      config: config,
       mode,
       .java,
       detectChunkByInitialLines: 2,
@@ -267,11 +259,8 @@ final class UnsignedNumberTests {
     ]
   )
   func take_unsignedLong_annotate(mode: JExtractGenerationMode, expectedChunks: [String]) throws {
-    var config = Configuration()
-
     try assertOutput(
       input: "public func takeUnsignedLong(arg: UInt64)",
-      config: config,
       mode,
       .java,
       detectChunkByInitialLines: 2,
@@ -323,11 +312,8 @@ final class UnsignedNumberTests {
     ]
   )
   func echo_unsignedLong_annotate(mode: JExtractGenerationMode, expectedChunks: [String]) throws {
-    let config = Configuration()
-
     try assertOutput(
       input: "public func unsignedLong(first: UInt64, second: UInt32) -> UInt32",
-      config: config,
       mode,
       .java,
       detectChunkByInitialLines: 2,
@@ -357,8 +343,22 @@ final class UnsignedNumberTests {
           """,
           """
           @Unsigned
-          public static long unsignedLong(@Unsigned long first, @Unsigned long second) {
-            return swiftjava_SwiftModule_unsignedLong_first_second.call(first, second);
+          public static long unsignedLong(@Unsigned long first, @Unsigned long second) throws SwiftIntegerOverflowException {
+            if (SwiftValueLayout.has32bitSwiftInt) {
+              if (first < 0 || first > 0xFFFFFFFFL) {
+                throw new SwiftIntegerOverflowException("Parameter 'first' overflow: " + first);
+              }
+              if (second < 0 || second > 0xFFFFFFFFL) {
+                throw new SwiftIntegerOverflowException("Parameter 'second' overflow: " + second);
+              }
+            }
+            long result$checked = swiftjava_SwiftModule_unsignedLong_first_second.call(first, second);
+            if (SwiftValueLayout.has32bitSwiftInt) {
+              if (result$checked < 0 || result$checked > 0xFFFFFFFFL) {
+                throw new SwiftIntegerOverflowException("Return value overflow: " + result$checked);
+              }
+            }
+            return result$checked;
           }
           """,
         ]
@@ -379,11 +379,8 @@ final class UnsignedNumberTests {
     ]
   )
   func echo_uint_annotate(mode: JExtractGenerationMode, expectedChunks: [String]) throws {
-    let config = Configuration()
-
     try assertOutput(
       input: "public func unsignedLong(first: UInt, second: UInt) -> UInt",
-      config: config,
       mode,
       .java,
       detectChunkByInitialLines: 2,

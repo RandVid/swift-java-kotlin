@@ -15,6 +15,7 @@
 import JExtractSwiftLib
 import Testing
 
+@Suite
 final class DataImportTests {
   private static let ifConfigImport = """
     #if canImport(FoundationEssentials)
@@ -212,10 +213,10 @@ final class DataImportTests {
          * public func returnData() -> Data
          * }
          */
-        public static Data returnData(AllocatingSwiftArena swiftArena$) {
-          MemorySegment _result = swiftArena$.allocate(Data.$LAYOUT);
-          swiftjava_SwiftModule_returnData.call(_result);
-          return Data.wrapMemoryAddressUnsafe(_result, swiftArena$);
+        public static Data returnData(AllocatingSwiftArena swiftArena) {
+          MemorySegment result$ = swiftArena.allocate(Data.$LAYOUT);
+          swiftjava_SwiftModule_returnData.call(result$);
+          return Data.wrapMemoryAddressUnsafe(result$, swiftArena);
         }
         """,
 
@@ -254,10 +255,15 @@ final class DataImportTests {
          * public init(bytes: UnsafeRawPointer, count: Int)
          * }
          */
-        public static Data init(java.lang.foreign.MemorySegment bytes, long count, AllocatingSwiftArena swiftArena$) {
-          MemorySegment _result = swiftArena$.allocate(Data.$LAYOUT);
-          swiftjava_SwiftModule_Data_init_bytes_count.call(bytes, count, _result);
-          return Data.wrapMemoryAddressUnsafe(_result, swiftArena$);
+        public static Data init(java.lang.foreign.MemorySegment bytes, long count, AllocatingSwiftArena swiftArena) throws SwiftIntegerOverflowException {
+          MemorySegment result$ = swiftArena.allocate(Data.$LAYOUT);
+          if (SwiftValueLayout.has32bitSwiftInt) {
+            if (count < Integer.MIN_VALUE || count > Integer.MAX_VALUE) {
+              throw new SwiftIntegerOverflowException("Parameter 'count' overflow: " + count);
+            }
+          }
+          swiftjava_SwiftModule_Data_init_bytes_count.call(bytes, count, result$);
+          return Data.wrapMemoryAddressUnsafe(result$, swiftArena);
         }
         """,
 
@@ -295,9 +301,15 @@ final class DataImportTests {
          * public var count: Int
          * }
          */
-        public long getCount() {
+        public long getCount() throws SwiftIntegerOverflowException {
           $ensureAlive();
-          return swiftjava_SwiftModule_Data_count$get.call(this.$memorySegment());
+          long result$checked = swiftjava_SwiftModule_Data_count$get.call(this.$memorySegment());
+          if (SwiftValueLayout.has32bitSwiftInt) {
+            if (result$checked < Integer.MIN_VALUE || result$checked > Integer.MAX_VALUE) {
+              throw new SwiftIntegerOverflowException("Return value overflow: " + result$checked);
+            }
+          }
+          return result$checked;
         }
         """,
 
@@ -459,7 +471,7 @@ final class DataImportTests {
          * public func receiveDataProtocol<T: DataProtocol>(dat: some DataProtocol, dat2: T?)
          * }
          */
-        public static void receiveDataProtocol(Data dat, Optional<Data> dat2) {
+        public static void receiveDataProtocol(Data dat, java.util.Optional<Data> dat2) {
           swiftjava_SwiftModule_receiveDataProtocol_dat_dat2.call(dat.$memorySegment(), SwiftRuntime.toOptionalSegmentInstance(dat2));
         }
         """,
@@ -522,7 +534,7 @@ final class DataImportTests {
       .java,
       expectedChunks: [
         """
-        public static Data returnData(SwiftArena swiftArena$) {
+        public static Data returnData(SwiftArena swiftArena) {
         """
       ]
     )
@@ -556,13 +568,112 @@ final class DataImportTests {
         "public final class Data implements JNISwiftInstance, DataProtocol {",
         "public long getCount() {",
 
-        "public static Data fromByteArray(byte[] bytes, SwiftArena swiftArena$) {",
+        "public static Data fromByteArray(byte[] bytes, SwiftArena swiftArena) {",
 
         "public byte[] toByteArray() {",
         "private static native byte[] $toByteArray(long selfPointer);",
 
         "public byte[] toByteArrayIndirectCopy() {",
         "private static native byte[] $toByteArrayIndirectCopy(long selfPointer);",
+      ]
+    )
+  }
+
+  // ==== -----------------------------------------------------------------------
+  // MARK: JNI DataProtocol generic parameter
+
+  @Test("Import DataProtocol: JNI generic parameter")
+  func dataProtocol_jni_genericParameter() throws {
+    let text = """
+      import Foundation
+
+      public struct MyResult {
+        public init() {}
+      }
+      public func processData<D: DataProtocol>(data: D) -> MyResult
+      """
+
+    try assertOutput(
+      input: text,
+      .jni,
+      .java,
+      detectChunkByInitialLines: 2,
+      expectedChunks: [
+        """
+        public static <D extends DataProtocol> MyResult processData(D data, SwiftArena swiftArena) {
+        """
+      ]
+    )
+  }
+
+  @Test("Import DataProtocol: JNI multiple generic parameters")
+  func dataProtocol_jni_multipleGenericParameters() throws {
+    let text = """
+      import Foundation
+
+      public func verify<D1: DataProtocol, D2: DataProtocol>(first: D1, second: D2) -> Bool
+      """
+
+    try assertOutput(
+      input: text,
+      .jni,
+      .java,
+      detectChunkByInitialLines: 2,
+      expectedChunks: [
+        """
+        public static <D1 extends DataProtocol, D2 extends DataProtocol> boolean verify(D1 first, D2 second) {
+        """
+      ]
+    )
+  }
+
+  @Test("Import DataProtocol: JNI generic parameter Swift thunk")
+  func dataProtocol_jni_genericParameter_swiftThunk() throws {
+    let text = """
+      import Foundation
+
+      public struct MyResult {
+        public init() {}
+      }
+      public func processData<D: DataProtocol>(data: D) -> MyResult
+      """
+
+    try assertOutput(
+      input: text,
+      .jni,
+      .swift,
+      detectChunkByInitialLines: 1,
+      expectedChunks: [
+        """
+        public func Java_com_example_swift_SwiftModule__00024processData__Ljava_lang_Object_2(environment: UnsafeMutablePointer<JNIEnv?>!, thisClass: jclass, data: jobject?) -> jlong {
+        """,
+        """
+          result$.initialize(to: SwiftModule.processData(data: dataswiftObject$))
+        """,
+      ]
+    )
+  }
+
+  @Test("Import DataProtocol: JNI mixed generic and some Swift thunk")
+  func dataProtocol_jni_multipleGenericParameters_swiftThunk() throws {
+    let text = """
+      import Foundation
+
+      public func verify<D1: DataProtocol>(first: D1, second: some DataProtocol) -> Bool
+      """
+
+    try assertOutput(
+      input: text,
+      .jni,
+      .swift,
+      detectChunkByInitialLines: 1,
+      expectedChunks: [
+        """
+        public func Java_com_example_swift_SwiftModule__00024verify__Ljava_lang_Object_2Ljava_lang_Object_2(environment: UnsafeMutablePointer<JNIEnv?>!, thisClass: jclass, first: jobject?, second: jobject?) -> jboolean {
+        """,
+        """
+          return SwiftModule.verify(first: firstswiftObject$, second: secondswiftObject$).getJNILocalRefValue(in: environment)
+        """,
       ]
     )
   }

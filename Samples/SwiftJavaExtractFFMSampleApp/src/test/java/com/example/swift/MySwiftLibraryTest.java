@@ -16,6 +16,7 @@ package com.example.swift;
 
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
+import org.swift.swiftkit.ffm.generated.SwiftJavaErrorException;
 
 import java.util.concurrent.CountDownLatch;
 
@@ -54,6 +55,27 @@ public class MySwiftLibraryTest {
     }
 
     @Test
+    void call_globalMakeString() {
+        String result = MySwiftLibrary.globalMakeString();
+        assertEquals("Hello from Swift!", result);
+    }
+
+    @Test
+    void call_globalStringIdentity() {
+        String input = "round-trip test!";
+        String result = MySwiftLibrary.globalStringIdentity(input);
+        assertEquals(input, result);
+    }
+
+    @Test
+    void call_globalStringIdentity_empty() {
+        String result = MySwiftLibrary.globalStringIdentity("");
+        assertEquals("", result);
+    }
+
+
+
+    @Test
     @Disabled("Upcalls not yet implemented in new scheme")
     @SuppressWarnings({"Convert2Lambda", "Convert2MethodRef"})
     void call_globalCallMeRunnable() {
@@ -72,6 +94,58 @@ public class MySwiftLibraryTest {
 
         MySwiftLibrary.globalCallMeRunnable(countDownLatch::countDown);
         assertEquals(0, countDownLatch.getCount());
+    }
+
+    // ==== ----------------------------------------------------------------
+    // Throwing functions
+
+    @Test
+    void call_globalThrowingVoid_noThrow() throws SwiftJavaErrorException {
+        MySwiftLibrary.globalThrowingVoid(false);
+    }
+
+    @Test
+    void call_globalThrowingVoid_throws() {
+        assertThrows(SwiftJavaErrorException.class, () -> {
+            MySwiftLibrary.globalThrowingVoid(true);
+        });
+    }
+
+    @Test
+    void call_globalThrowingReturn_noThrow() throws SwiftJavaErrorException {
+        long result = MySwiftLibrary.globalThrowingReturn(false);
+        assertEquals(42, result);
+    }
+
+    @Test
+    void call_globalThrowingReturn_throws() {
+        assertThrows(SwiftJavaErrorException.class, () -> {
+            MySwiftLibrary.globalThrowingReturn(true);
+        });
+    }
+
+    @Test
+    void call_globalThrowingString_noThrow() throws SwiftJavaErrorException {
+        String result = MySwiftLibrary.globalThrowingString(false);
+        assertEquals("Hello from throwing Swift!", result);
+    }
+
+    @Test
+    void call_globalThrowingString_throws() {
+        assertThrows(SwiftJavaErrorException.class, () -> {
+            MySwiftLibrary.globalThrowingString(true);
+        });
+    }
+
+    @Test
+    void call_globalThrowingString_throws_checkMessage() {
+        SwiftJavaErrorException error = assertThrows(SwiftJavaErrorException.class, () -> {
+            MySwiftLibrary.globalThrowingString(true);
+        });
+        assertEquals(
+                "org.swift.swiftkit.ffm.generated.SwiftJavaErrorException: SwiftExampleError(message: \"expected error in globalThrowingString\")",
+                error.toString()
+        );
     }
 
 }

@@ -27,7 +27,7 @@ public class DataTest {
             var data = Data.fromByteArray(bytes, arena);
 
             var echoed = MySwiftLibrary.echoData(data, arena);
-            assertEquals(4, echoed.getCount());
+            assertArrayEquals(bytes, echoed.toByteArray());
         }
     }
 
@@ -126,6 +126,33 @@ public class DataTest {
             byte[] result = echoed.toByteArray();
 
             assertArrayEquals(original, result);
+        }
+    }
+
+    // DataProtocol generic parameter tests
+
+    @Test
+    void data_getCountGeneric() {
+        try (var arena = SwiftArena.ofConfined()) {
+            byte[] bytes = new byte[] { 1, 2, 3, 4, 5 };
+            var data = Data.fromByteArray(bytes, arena);
+            assertEquals(5, MySwiftLibrary.getDataCountGeneric(data));
+        }
+    }
+
+    @Test
+    void data_compareDataGeneric() {
+        try (var arena = SwiftArena.ofConfined()) {
+            byte[] bytes1 = new byte[] { 1, 2, 3 };
+            byte[] bytes2 = new byte[] { 1, 2, 3 };
+            byte[] bytes3 = new byte[] { 1, 2, 4 };
+
+            var data1 = Data.fromByteArray(bytes1, arena);
+            var data2 = Data.fromByteArray(bytes2, arena);
+            var data3 = Data.fromByteArray(bytes3, arena);
+
+            assertTrue(MySwiftLibrary.compareDataGeneric(data1, data2));
+            assertFalse(MySwiftLibrary.compareDataGeneric(data1, data3));
         }
     }
 }

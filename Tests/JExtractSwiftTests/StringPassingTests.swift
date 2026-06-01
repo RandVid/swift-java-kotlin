@@ -15,6 +15,7 @@
 import JExtractSwiftLib
 import Testing
 
+@Suite
 final class StringPassingTests {
   let class_interfaceFile =
     """
@@ -64,9 +65,15 @@ final class StringPassingTests {
          * public func writeString(string: String) -> Int
          * }
          */
-        public static long writeString(java.lang.String string) {
+        public static long writeString(java.lang.String string) throws SwiftIntegerOverflowException {
             try(var arena$ = Arena.ofConfined()) {
-                return swiftjava___FakeModule_writeString_string.call(SwiftRuntime.toCString(string, arena$));
+                long result$checked = swiftjava___FakeModule_writeString_string.call(SwiftStrings.toCString(string, arena$));
+                if (SwiftValueLayout.has32bitSwiftInt) {
+                    if (result$checked < Integer.MIN_VALUE || result$checked > Integer.MAX_VALUE) {
+                        throw new SwiftIntegerOverflowException("Return value overflow: " + result$checked);
+                    }
+                }
+                return result$checked;
             }
         }
         """,

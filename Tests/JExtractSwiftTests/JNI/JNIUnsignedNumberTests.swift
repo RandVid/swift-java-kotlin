@@ -16,6 +16,7 @@ import JExtractSwiftLib
 import SwiftJavaConfigurationShared
 import Testing
 
+@Suite
 final class JNIUnsignedNumberTests {
 
   @Test("Import: UInt16 (char)")
@@ -46,11 +47,8 @@ final class JNIUnsignedNumberTests {
 
   @Test("Import: UInt32 (annotate)")
   func jni_unsignedInt_annotate() throws {
-    var config = Configuration()
-
     try assertOutput(
       input: "public func unsignedInt(_ arg: UInt32)",
-      config: config,
       .jni,
       .java,
       detectChunkByInitialLines: 2,
@@ -73,11 +71,8 @@ final class JNIUnsignedNumberTests {
 
   @Test("Import: return UInt32 (default)")
   func jni_returnUnsignedIntDefault() throws {
-    let config = Configuration()
-
     try assertOutput(
       input: "public func returnUnsignedInt() -> UInt32",
-      config: config,
       .jni,
       .java,
       detectChunkByInitialLines: 2,
@@ -101,11 +96,8 @@ final class JNIUnsignedNumberTests {
 
   @Test("Import: take UInt64 return UInt32 (annotate)")
   func jni_echo_unsignedLong_annotate() throws {
-    let config = Configuration()
-
     try assertOutput(
       input: "public func unsignedLong(first: UInt64, second: UInt32) -> UInt32",
-      config: config,
       .jni,
       .java,
       detectChunkByInitialLines: 2,

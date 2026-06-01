@@ -46,7 +46,7 @@ extension HelloSwift: HelloSwiftNativeMethods {
     _ = self.sayHelloBack(42)
 
     let predicate: JavaPredicate<JavaInteger> = self.lessThanTen()!
-    let value = predicate.test(JavaInteger(3).as(JavaObject.self))
+    let value = predicate.test(JavaInteger(3))
     print("Running a JavaPredicate from swift 3 < 10 = \(value)")
 
     let strings = doublesToStrings([3.14159, 2.71828])
@@ -61,6 +61,10 @@ extension HelloSwift: HelloSwiftNativeMethods {
     } else {
       fatalError("Expected subclass here")
     }
+
+    // Check escaped name
+    assert(self.`init`(42) == 42)
+    assert(self._echo("Hello") == "Hello")
 
     // Check "is" behavior
     assert(newHello.is(HelloSwift.self))

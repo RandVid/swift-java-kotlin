@@ -1,0 +1,59 @@
+//===----------------------------------------------------------------------===//
+//
+// This source file is part of the Swift.org open source project
+//
+// Copyright (c) 2025 Apple Inc. and the Swift.org project authors
+// Licensed under Apache License v2.0
+//
+// See LICENSE.txt for license information
+// See CONTRIBUTORS.txt for the list of Swift.org project authors
+//
+// SPDX-License-Identifier: Apache-2.0
+//
+//===----------------------------------------------------------------------===//
+
+public func returnPair() -> (Int64, String) {
+  (42, "hello")
+}
+
+public func takePair(pair: (Int64, String)) -> String {
+  "\(pair.0):\(pair.1)"
+}
+
+public func labeledTuple() -> (x: Int32, y: Int32) {
+  (x: 10, y: 20)
+}
+
+public func echoSingleTuple(input: (String)) -> (String) {
+  input
+}
+
+public func echoTriple(triple: (Bool, Double, Int64)) -> (Bool, Double, Int64) {
+  triple
+}
+
+public func echoOptionalTriple(triple: (Int64?, String?, Alignment?)) -> (Int64?, String?, Alignment?) {
+  triple
+}
+
+public func makeBigTuple() -> (
+  Bool, Int8, Int16, UInt16,
+  Int32, Int64, Float, Double,
+  String, Bool, Int8, Int16,
+  UInt16, Int32, Int64, Float
+) {
+  (
+    true, 1, 2, 3,
+    4, 5, 6.0, 7.0,
+    "eight", false, 9, 10,
+    11, 12, 13, 14.0
+  )
+}
+
+public func namedByteArrayTuple() -> (name: [UInt8], another: [UInt8]) {
+  (name: [1, 2, 3], another: [4, 5])
+}
+
+public func genericTypeTuple() -> (MyID<Double>, Alignment) {
+  (MyID(1.23), .horizontal)
+}

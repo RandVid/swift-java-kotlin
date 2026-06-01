@@ -12,7 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-import JavaTypes
+import SwiftJavaJNICore
 
 extension JavaType {
   /// The description of the type java.lang.foreign.MemorySegment.
@@ -45,6 +45,11 @@ extension JavaType {
     .class(package: "java.lang", name: "Object")
   }
 
+  /// The description of the type java.util.Optional.
+  static func optional(_ T: JavaType) -> JavaType {
+    .class(package: "java.util", name: "Optional", typeParameters: [T])
+  }
+
   /// The description of the type java.util.concurrent.CompletableFuture<T>
   static func completableFuture(_ T: JavaType) -> JavaType {
     .class(package: "java.util.concurrent", name: "CompletableFuture", typeParameters: [T.boxedType])
@@ -58,4 +63,5 @@ extension JavaType {
   static var javaUtilUUID: JavaType {
     .class(package: "java.util", name: "UUID")
   }
+
 }

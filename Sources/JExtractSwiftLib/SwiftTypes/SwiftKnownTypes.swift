@@ -104,12 +104,57 @@ struct SwiftKnownTypes {
     )
   }
 
+  func optionalSugar(_ wrappedType: SwiftType) -> SwiftType {
+    .nominal(
+      SwiftNominalType(
+        sugarName: .optional,
+        nominalTypeDecl: symbolTable[.optional],
+        genericArguments: [wrappedType]
+      )
+    )
+  }
+
+  func arraySugar(_ elementType: SwiftType) -> SwiftType {
+    .nominal(
+      SwiftNominalType(
+        sugarName: .array,
+        nominalTypeDecl: symbolTable[.array],
+        genericArguments: [elementType]
+      )
+    )
+  }
+
+  func dictionarySugar(_ keyType: SwiftType, _ valueType: SwiftType) -> SwiftType {
+    .nominal(
+      SwiftNominalType(
+        sugarName: .dictionary,
+        nominalTypeDecl: symbolTable[.dictionary],
+        genericArguments: [keyType, valueType]
+      )
+    )
+  }
+
+  func set(_ elementType: SwiftType) -> SwiftType {
+    .nominal(
+      SwiftNominalType(
+        nominalTypeDecl: symbolTable[.set],
+        genericArguments: [elementType]
+      )
+    )
+  }
+
   /// Returns the known representative concrete type if there is one for the
-  /// given protocol kind. E.g. `String` for `StringProtocol`
+  /// given protocol kind. E.g. `Data` for `DataProtocol`
   func representativeType(of knownProtocol: SwiftKnownTypeDeclKind) -> SwiftType? {
+    guard let kind = Self.representativeType(of: knownProtocol) else { return nil }
+    return .nominal(SwiftNominalType(nominalTypeDecl: symbolTable[kind]))
+  }
+
+  /// Returns the representative concrete type kind for a protocol, if one exists
+  static func representativeType(of knownProtocol: SwiftKnownTypeDeclKind) -> SwiftKnownTypeDeclKind? {
     switch knownProtocol {
-    case .foundationDataProtocol: return self.foundationData
-    case .essentialsDataProtocol: return self.essentialsData
+    case .foundationDataProtocol: return .foundationData
+    case .essentialsDataProtocol: return .essentialsData
     default: return nil
     }
   }

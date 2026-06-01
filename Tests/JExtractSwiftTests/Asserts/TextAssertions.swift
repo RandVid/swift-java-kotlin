@@ -12,8 +12,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+import CodePrinting
 import JExtractSwiftLib
 import SwiftJavaConfigurationShared
+import SwiftParser
+import SwiftSyntax
 import Testing
 
 import struct Foundation.CharacterSet
@@ -32,7 +35,15 @@ func assertOutput(
   swiftModuleName: String = "SwiftModule",
   detectChunkByInitialLines _detectChunkByInitialLines: Int = 4,
   javaClassLookupTable: [String: String] = [:],
+  /// Map of dependency Swift module name to raw Swift source text. Used to seed
+  /// `translator.sourceDependencies` so cross-module type lookups resolve.
+  dependencySwiftSources: [String: String] = [:],
+  /// Map of Swift module name to Java package, mirroring what `--depends-on`
+  /// dependency configs would carry. Forwarded to the generator so cross-module
+  /// type references print with their fully-qualified Java name.
+  moduleJavaPackages: [String: String] = [:],
   expectedChunks: [String],
+  notExpectedChunks: [String] = [],
   fileID: String = #fileID,
   filePath: String = #filePath,
   line: Int = #line,
@@ -41,7 +52,12 @@ func assertOutput(
   var config = config ?? Configuration()
   config.swiftModule = swiftModuleName
   let translator = Swift2JavaTranslator(config: config)
-  translator.dependenciesClasses = Array(javaClassLookupTable.keys)
+  translator.sourceDependencies.javaClasses = Array(javaClassLookupTable.keys)
+  for (depModule, depSource) in dependencySwiftSources {
+    let syntax = Parser.parse(source: depSource)
+    let input = SwiftJavaInputFile(syntax: syntax, path: "/fake/\(depModule).swift")
+    translator.sourceDependencies.swiftModuleInputs[depModule] = [input]
+  }
 
   try! translator.analyze(path: "/fake/Fake.swiftinterface", text: input)
 
@@ -71,7 +87,8 @@ func assertOutput(
       javaPackage: "com.example.swift",
       swiftOutputDirectory: "/fake",
       javaOutputDirectory: "/fake",
-      javaClassLookupTable: javaClassLookupTable
+      javaClassLookupTable: javaClassLookupTable,
+      moduleJavaPackages: moduleJavaPackages
     )
 
     switch renderKind {
@@ -103,6 +120,23 @@ func assertOutput(
     }
   }
   output = printer.finalize()
+
+  let sourceLocation = SourceLocation(fileID: fileID, filePath: filePath, line: line, column: column)
+  for notExpectedChunk in notExpectedChunks {
+    let outputNotContainsNotExpectedChunk = !output.contains(notExpectedChunk)
+    #expect(
+      outputNotContainsNotExpectedChunk,
+      """
+      \("error: Output must not contain not expected chunk!".red)
+      ==== Not Expected output -----------------------------------------------  
+      \(notExpectedChunk.yellow)
+      ==== Got output ----------------------------------------------------
+      \(output)
+      ==== ---------------------------------------------------------------
+      """,
+      sourceLocation: sourceLocation
+    )
+  }
 
   let gotLines = output.split(separator: "\n").filter { l in
     l.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).count > 0

@@ -34,7 +34,7 @@ extension SwiftJava {
   struct JExtractCommand: SwiftJavaBaseAsyncParsableCommand, HasCommonOptions {
     static let configuration = CommandConfiguration(
       commandName: "jextract", // TODO: wrap-swift?
-      abstract: "Wrap Swift functions and types with Java bindings, making them available to be called from Java"
+      abstract: "Wrap Swift functions and types with Java bindings, making them available to be called from Java",
     )
 
     @OptionGroup var commonOptions: SwiftJava.CommonOptions
@@ -61,7 +61,7 @@ extension SwiftJava {
     @Flag(
       inversion: .prefixedNo,
       help:
-        "Some build systems require an output to be present when it was 'expected', even if empty. This is used by the JExtractSwiftPlugin build plugin, but otherwise should not be necessary."
+        "Some build systems require an output to be present when it was 'expected', even if empty. This is used by the JExtractSwiftPlugin build plugin, but otherwise should not be necessary.",
     )
     var writeEmptyFiles: Bool?
 
@@ -92,12 +92,53 @@ extension SwiftJava {
     @Flag(
       inversion: .prefixedNo,
       help:
-        "By enabling this mode, JExtract will generate Java code that allows you to implement Swift protocols using Java classes. This feature requires disabling the SwiftPM Sandbox (!). This feature is onl supported in 'jni' mode."
+        "By enabling this mode, JExtract will generate Java code that allows you to implement Swift protocols using Java classes. This feature requires disabling the SwiftPM Sandbox (!). This feature is onl supported in 'jni' mode.",
     )
     var enableJavaCallbacks: Bool?
 
     @Option(help: "If specified, JExtract will output to this file a list of paths to all generated Java source files")
     var generatedJavaSourcesListFileOutput: String?
+
+    @Option(
+      help: """
+        If specified, JExtract (JNI mode) will write a linker version script to this path. \
+        The file lists every generated JNI @_cdecl entry-point symbol as a global export \
+        and hides all other symbols with local: *, enabling dead-code elimination of \
+        unreachable Swift code:
+          -Xlinker --version-script=<path>
+        """
+    )
+    var linkerExportListOutput: String?
+
+    @Option(
+      name: .long,
+      help: """
+        Include only Swift source files matching these patterns during jextract. \
+        Patterns are matched against relative file paths (without .swift extension). \
+        Supports * (single-segment wildcard) and ** (recursive wildcard). \
+        Example: --filter-include 'Models/**'
+        """,
+    )
+    var filterInclude: [String] = []
+
+    @Option(
+      name: .long,
+      help: """
+        Exclude Swift source files matching these patterns during jextract. \
+        Same pattern syntax as --filter-include. \
+        Example: --filter-exclude 'Internal/*'
+        """,
+    )
+    var filterExclude: [String] = []
+
+    @Option(help: "If specified, only generate bindings for this single Swift type name")
+    var singleType: String?
+
+    @Option(
+      help:
+        "Path to a JSON file containing a StaticBuildConfiguration. Used to resolve #if conditional compilation blocks."
+    )
+    var staticBuildConfig: String?
   }
 }
 
@@ -116,6 +157,11 @@ extension SwiftJava.JExtractCommand {
     configure(&config.memoryManagementMode, overrideWith: self.memoryManagementMode)
     configure(&config.asyncFuncMode, overrideWith: self.asyncFuncMode)
     configure(&config.generatedJavaSourcesListFileOutput, overrideWith: self.generatedJavaSourcesListFileOutput)
+    configure(&config.linkerExportListOutput, overrideWith: self.linkerExportListOutput)
+    configure(&config.swiftFilterInclude, append: self.filterInclude)
+    configure(&config.swiftFilterExclude, append: self.filterExclude)
+    configure(&config.singleType, overrideWith: self.singleType)
+    configure(&config.staticBuildConfigurationFile, overrideWith: self.staticBuildConfig)
 
     try checkModeCompatibility(config: config)
 
@@ -128,11 +174,11 @@ extension SwiftJava.JExtractCommand {
 
     print("[debug][swift-java] Running 'swift-java jextract' in mode: " + "\(config.effectiveMode)".bold)
 
-    // Load all of the dependent configurations and associate them with Swift modules.
-    let dependentConfigs = try loadDependentConfigs(dependsOn: self.dependsOn)
-    print("[debug][swift-java] Dependent configs: \(dependentConfigs.count)")
+    // Load all of the dependency configurations and associate them with Swift modules.
+    let dependencyConfigs = try parseDependsOnSyntax(dependsOn: self.dependsOn)
+    print("[debug][swift-java] Dependency configs: \(dependencyConfigs.count)")
 
-    try jextractSwift(config: config, dependentConfigs: dependentConfigs.map(\.1))
+    try jextractSwift(config: config, dependencyConfigs: dependencyConfigs)
   }
 
   /// Check if the configured modes are compatible, and fail if not
@@ -161,9 +207,9 @@ struct IncompatibleModeError: Error {
 extension SwiftJava.JExtractCommand {
   func jextractSwift(
     config: Configuration,
-    dependentConfigs: [Configuration]
+    dependencyConfigs: [DependencyConfig],
   ) throws {
-    try SwiftToJava(config: config, dependentConfigs: dependentConfigs).run()
+    try SwiftToJava(config: config, dependencyConfigs: dependencyConfigs).run()
   }
 
 }

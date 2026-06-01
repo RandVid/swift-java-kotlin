@@ -21,6 +21,8 @@ import Foundation
 
 #if os(Linux)
 import Glibc
+#elseif os(Android)
+import Android
 #else
 import Darwin.C
 #endif
@@ -66,6 +68,19 @@ public func getArray() -> [UInt8] {
   [1, 2, 3]
 }
 
+// Tuple round-trips for jextract FFM (see `FFMTupleTest` in the sample app).
+public func ffmTupleReturnPair() -> (Int32, Int64) {
+  (42, 43)
+}
+
+public func ffmTupleSumPair(_ arg: (Int32, Int64)) -> Int64 {
+  Int64(arg.0) + arg.1
+}
+
+public func ffmTupleLabeledPair() -> (x: Int32, y: Int32) {
+  (x: 10, y: 20)
+}
+
 public func sumAllByteArrayElements(actuallyAnArray: UnsafeRawPointer, count: Int) -> Int {
   let bufferPointer = UnsafeRawBufferPointer(start: actuallyAnArray, count: count)
   let array = Array(bufferPointer)
@@ -99,6 +114,59 @@ public func globalReceiveOptional(o1: Int?, o2: (some DataProtocol)?) -> Int {
   case (let v1?, let v2?):
     return 3
   }
+}
+
+// ==== -----------------------------------------------------------------------
+// MARK: String returns
+
+public func globalMakeString() -> String {
+  "Hello from Swift!"
+}
+
+public func globalStringIdentity(string: String) -> String {
+  string
+}
+
+// ==== -----------------------------------------------------------------------
+// MARK: Throwing functions
+
+public struct SwiftExampleError: Error {
+  public let message: String
+}
+
+public func globalThrowingVoid(doThrow: Bool) throws {
+  if doThrow {
+    throw SwiftExampleError(message: "expected error in globalThrowingVoid")
+  }
+}
+
+public func globalThrowingReturn(doThrow: Bool) throws -> Int {
+  if doThrow {
+    throw SwiftExampleError(message: "expected error in globalThrowingReturn")
+  }
+  return 42
+}
+
+public func globalThrowingString(doThrow: Bool) throws -> String {
+  if doThrow {
+    throw SwiftExampleError(message: "expected error in globalThrowingString")
+  }
+  return "Hello from throwing Swift!"
+}
+
+// ==== -----------------------------------------------------------------------
+// MARK: Overloaded functions
+
+public func globalOverloaded(a: Int) {
+  p("globalOverloaded(a: \(a))")
+}
+
+public func globalOverloaded(b: Int) {
+  p("globalOverloaded(b: \(b))")
+}
+
+public func globalOverloaded(_ c: Int) {
+  p("globalOverloaded(c: \(c))")
 }
 
 // ==== Internal helpers

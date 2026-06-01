@@ -12,7 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-import JavaTypes
+import SwiftJavaJNICore
 
 extension String {
 
@@ -66,6 +66,15 @@ extension String {
     .joined()
   }
 
+  /// If the string ends with `.swift`, return it without that suffix;
+  /// otherwise return self unchanged
+  func dropSwiftFileSuffix() -> String {
+    if hasSuffix(".swift") {
+      return String(dropLast(".swift".count))
+    }
+    return self
+  }
+
   /// Looks up self as a SwiftJava wrapped class name and converts it
   /// into a `JavaType.class` if it exists in `lookupTable`.
   func parseJavaClassFromSwiftJavaName(in lookupTable: [String: String]) -> JavaType? {
@@ -77,6 +86,14 @@ extension String {
     let javaClassName = nameParts.last!
 
     return .class(package: javaPackageName, name: javaClassName)
+  }
+
+  /// Unescapes the name if it is surrounded by backticks.
+  var unescapedSwiftName: String {
+    if count >= 2 && hasPrefix("`") && hasSuffix("`") {
+      return String(dropFirst().dropLast())
+    }
+    return self
   }
 }
 

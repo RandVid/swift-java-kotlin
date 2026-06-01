@@ -13,9 +13,10 @@
 //===----------------------------------------------------------------------===//
 
 import Foundation
-import JavaTypes
 import SwiftBasicFormat
+import SwiftIfConfig
 import SwiftJavaConfigurationShared
+import SwiftJavaJNICore
 import SwiftParser
 import SwiftSyntax
 
@@ -27,6 +28,9 @@ public final class Swift2JavaTranslator {
 
   let config: Configuration
 
+  /// The build configuration used to resolve #if conditional compilation blocks.
+  let buildConfig: any BuildConfiguration
+
   /// The name of the Swift module being translated.
   let swiftModuleName: String
 
@@ -34,8 +38,15 @@ public final class Swift2JavaTranslator {
 
   var inputs: [SwiftJavaInputFile] = []
 
-  /// A list of used Swift class names that live in dependencies, e.g. `JavaInteger`
-  package var dependenciesClasses: [String] = []
+  /// File paths that were skipped by swift filters but still need empty output
+  /// files written (when --write-empty-files is set) so SwiftPM doesn't
+  /// complain about missing declared outputs
+  var filteredOutPaths: [String] = []
+
+  /// Sources jextract needs for symbol resolution but does not generate bindings
+  /// for: wrapped Java classes plus real Swift sources from dependency modules.
+  /// Populated by `SwiftToJava.run` before `analyze()` runs.
+  package var sourceDependencies = SourceDependencies()
 
   // ==== Output state
 
@@ -46,6 +57,9 @@ public final class Swift2JavaTranslator {
   /// A mapping from Swift type names (e.g., A.B) over to the imported nominal
   /// type representation.
   package var importedTypes: [String: ImportedNominalType] = [:]
+
+  /// Specializations of generic types that will get their concrete Java declarations, "as if" they were independent types
+  package var specializations: [ImportedNominalType: Set<ImportedNominalType>] = [:]
 
   var lookupContext: SwiftTypeLookupContext! = nil
 
@@ -62,6 +76,19 @@ public final class Swift2JavaTranslator {
     self.log = Logger(label: "translator", logLevel: config.logLevel ?? .info)
     self.config = config
     self.swiftModuleName = swiftModule
+
+    if let staticBuildConfigPath = config.staticBuildConfigurationFile {
+      do {
+        let data = try Data(contentsOf: URL(fileURLWithPath: staticBuildConfigPath))
+        let decoder = JSONDecoder()
+        self.buildConfig = try decoder.decode(StaticBuildConfiguration.self, from: data)
+        self.log.info("Using custom static build configuration from: \(staticBuildConfigPath)")
+      } catch {
+        fatalError("Failed to load static build configuration from '\(staticBuildConfigPath)': \(error)")
+      }
+    } else {
+      self.buildConfig = .jextractDefault
+    }
   }
 }
 
@@ -73,12 +100,12 @@ extension Swift2JavaTranslator {
     AnalysisResult(
       importedTypes: self.importedTypes,
       importedGlobalVariables: self.importedGlobalVariables,
-      importedGlobalFuncs: self.importedGlobalFuncs
+      importedGlobalFuncs: self.importedGlobalFuncs,
     )
   }
 
   package func add(filePath: String, text: String) {
-    log.info("Adding: \(filePath)")
+    log.debug("Adding: \(filePath)")
     let sourceFileSyntax = Parser.parse(source: text)
     self.inputs.append(SwiftJavaInputFile(syntax: sourceFileSyntax, path: filePath))
   }
@@ -100,47 +127,86 @@ extension Swift2JavaTranslator {
       visitor.visit(inputFile: input)
     }
 
+    // Apply any specializations registered after their target types were visited
+    visitor.applyPendingSpecializations()
+
     self.visitFoundationDeclsIfNeeded(with: visitor)
   }
 
   private func visitFoundationDeclsIfNeeded(with visitor: Swift2JavaVisitor) {
-    // If any API uses 'Foundation.Data' or 'FoundationEssentials.Data',
-    // import 'Data' as if it's declared in this module.
-    if let dataDecl = self.symbolTable[.foundationData] ?? self.symbolTable[.essentialsData] {
-      let dataProtocolDecl = (self.symbolTable[.foundationDataProtocol] ?? self.symbolTable[.essentialsDataProtocol])!
-      if self.isUsing(where: { $0 == dataDecl || $0 == dataProtocolDecl }) {
-        visitor.visit(
-          nominalDecl: dataDecl.syntax!.asNominal!,
-          in: nil,
-          sourceFilePath: "Foundation/FAKE_FOUNDATION_DATA.swift"
-        )
-        visitor.visit(
-          nominalDecl: dataProtocolDecl.syntax!.asNominal!,
-          in: nil,
-          sourceFilePath: "Foundation/FAKE_FOUNDATION_DATAPROTOCOL.swift"
-        )
-      }
+    // Each entry pairs a Foundation/FoundationEssentials counterpart so the
+    // user-code reference can match either. Entries within the same group are
+    // visited together when any one of the candidates is referenced — so using
+    // Data also emits DataProtocol, etc.
+    struct FoundationTypeGroup {
+      let candidates: [SwiftKnownTypeDeclKind]
+      let fakeSourceFilePath: String
     }
+    let groups: [[FoundationTypeGroup]] = [
+      [
+        .init(
+          candidates: [.foundationData, .essentialsData],
+          fakeSourceFilePath: "Foundation/FAKE_FOUNDATION_DATA.swift",
+        ),
+        .init(
+          candidates: [.foundationDataProtocol, .essentialsDataProtocol],
+          fakeSourceFilePath: "Foundation/FAKE_FOUNDATION_DATAPROTOCOL.swift",
+        ),
+      ],
+      [
+        .init(
+          candidates: [.foundationDate, .essentialsDate],
+          fakeSourceFilePath: "Foundation/FAKE_FOUNDATION_DATE.swift",
+        )
+      ],
+      [
+        .init(
+          candidates: [.foundationUUID, .essentialsUUID],
+          fakeSourceFilePath: "Foundation/FAKE_FOUNDATION_UUID.swift",
+        )
+      ],
+    ]
 
-    // Foundation.Date
-    if let dateDecl = self.symbolTable[.foundationDate] ?? self.symbolTable[.essentialsDate] {
-      if self.isUsing(where: { $0 == dateDecl }) {
+    for group in groups {
+      let resolved: [(primary: SwiftNominalTypeDeclaration, source: String, candidates: [SwiftNominalTypeDeclaration])] =
+        group.compactMap { type in
+          let candidates = type.candidates.compactMap { self.symbolTable[$0] }
+          guard let primary = candidates.first else {
+            return nil
+          }
+          return (primary, type.fakeSourceFilePath, candidates)
+        }
+      guard !resolved.isEmpty else {
+        continue
+      }
+
+      let allCandidates = resolved.flatMap(\.candidates)
+      let isReferenced = self.isUsing(where: { decl in
+        allCandidates.contains(where: { $0 === decl })
+      })
+      guard isReferenced else {
+        continue
+      }
+
+      // Visit the fake source files, and register the types.
+      for entry in resolved {
         visitor.visit(
-          nominalDecl: dateDecl.syntax!.asNominal!,
+          nominalDecl: entry.primary.syntax.asNominal!,
           in: nil,
-          sourceFilePath: "Foundation/FAKE_FOUNDATION_DATE.swift"
+          sourceFilePath: entry.source,
         )
       }
     }
   }
 
   package func prepareForTranslation() {
-    let dependenciesSource = self.buildDependencyClassesSourceFile()
-
     let symbolTable = SwiftSymbolTable.setup(
       moduleName: self.swiftModuleName,
-      inputs + [dependenciesSource],
-      log: self.log
+      inputs,
+      config: self.config,
+      sourceDependencies: self.sourceDependencies,
+      buildConfig: self.buildConfig,
+      log: self.log,
     )
     self.lookupContext = SwiftTypeLookupContext(symbolTable: symbolTable)
   }
@@ -151,11 +217,12 @@ extension Swift2JavaTranslator {
     func check(_ type: SwiftType) -> Bool {
       switch type {
       case .nominal(let nominal):
+        if nominal.genericArguments.contains(where: check) {
+          return true
+        }
         return predicate(nominal.nominalTypeDecl)
-      case .optional(let ty):
-        return check(ty)
       case .tuple(let tuple):
-        return tuple.contains(where: check)
+        return tuple.contains(where: { check($0.type) })
       case .function(let fn):
         return check(fn.resultType) || fn.parameters.contains(where: { check($0.type) })
       case .metatype(let ty):
@@ -166,8 +233,6 @@ extension Swift2JavaTranslator {
         return types.contains(where: check)
       case .genericParameter:
         return false
-      case .array(let ty):
-        return check(ty)
       }
     }
 
@@ -200,17 +265,6 @@ extension Swift2JavaTranslator {
     }
     return false
   }
-
-  /// Returns a source file that contains all the available dependency classes.
-  private func buildDependencyClassesSourceFile() -> SwiftJavaInputFile {
-    let contents = self.dependenciesClasses.map {
-      "public class \($0) {}"
-    }
-    .joined(separator: "\n")
-
-    let syntax = SourceFileSyntax(stringLiteral: contents)
-    return SwiftJavaInputFile(syntax: syntax, path: "FakeDependencyClassesSourceFile.swift")
-  }
 }
 
 // ==== ----------------------------------------------------------------------------------------------------------------
@@ -219,7 +273,7 @@ extension Swift2JavaTranslator {
   /// Try to resolve the given nominal declaration node into its imported representation.
   func importedNominalType(
     _ nominalNode: some DeclGroupSyntax & NamedDeclSyntax & WithModifiersSyntax & WithAttributesSyntax,
-    parent: ImportedNominalType?
+    parent: ImportedNominalType?,
   ) -> ImportedNominalType? {
     if !nominalNode.shouldExtract(config: config, log: log, in: parent) {
       return nil
@@ -242,11 +296,14 @@ extension Swift2JavaTranslator {
       return nil
     }
 
-    // Whether to import this extension?
-    guard swiftNominalDecl.moduleName == self.swiftModuleName else {
+    let isFromThisModule = swiftNominalDecl.moduleName == self.swiftModuleName
+    let isFromStubbedModule = config.hasImportedModuleStub(moduleOfNominal: swiftNominalDecl.moduleName)
+    let isFromDependencyModule = sourceDependencies.swiftModuleNames.contains(swiftNominalDecl.moduleName)
+    guard isFromThisModule || isFromStubbedModule || isFromDependencyModule else {
       return nil
     }
-    guard swiftNominalDecl.syntax!.shouldExtract(config: config, log: log, in: nil) else {
+
+    guard swiftNominalDecl.syntax.shouldExtract(config: config, log: log, in: nil) else {
       return nil
     }
 
@@ -255,6 +312,11 @@ extension Swift2JavaTranslator {
 
   func importedNominalType(_ nominal: SwiftNominalTypeDeclaration) -> ImportedNominalType? {
     let fullName = nominal.qualifiedName
+
+    guard shouldJExtractType(qualifiedName: fullName, config: config) else {
+      log.debug("Skip import '\(fullName)': filtered by swiftFilterInclude/swiftFilterExclude")
+      return nil
+    }
 
     if let alreadyImported = importedTypes[fullName] {
       return alreadyImported
@@ -267,7 +329,7 @@ extension Swift2JavaTranslator {
   }
 }
 
-// ==== ----------------------------------------------------------------------------------------------------------------
+// ==== -----------------------------------------------------------------------
 // MARK: Errors
 
 public struct Swift2JavaTranslatorError: Error {

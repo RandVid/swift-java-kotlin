@@ -75,7 +75,7 @@ struct JNIOptionalTests {
           let result_value$ = SwiftModule.optionalSugar(arg_discriminator == 1 ? Int64(fromJNI: arg_value, in: environment) : nil).map {
             Int64($0) << 32 | Int64(1)
           } ?? 0
-          return result_value$.getJNIValue(in: environment)
+          return result_value$.getJNILocalRefValue(in: environment)
         }
         """
       ]
@@ -129,7 +129,7 @@ struct JNIOptionalTests {
             environment.interface.SetByteArrayRegion(environment, result_discriminator$, 0, 1, &flag$)
           }
           else {
-            result$ = String.jniPlaceholderValue
+            result$ = nil
             var flag$ = Int8(0)
             environment.interface.SetByteArrayRegion(environment, result_discriminator$, 0, 1, &flag$)
           }
@@ -155,10 +155,10 @@ struct JNIOptionalTests {
          * public func optionalClass(_ arg: MyClass?) -> MyClass?
          * }
          */
-        public static Optional<MyClass> optionalClass(Optional<MyClass> arg, SwiftArena swiftArena$) {
+        public static java.util.Optional<MyClass> optionalClass(java.util.Optional<MyClass> arg, SwiftArena swiftArena) {
           byte[] result$_discriminator$ = new byte[1];
           long result$ = SwiftModule.$optionalClass(arg.map(MyClass::$memoryAddress).orElse(0L), result$_discriminator$);
-          return (result$_discriminator$[0] == 1) ? Optional.of(MyClass.wrapMemoryAddressUnsafe(result$, swiftArena$)) : Optional.empty();
+          return (result$_discriminator$[0] == 1) ? Optional.of(MyClass.wrapMemoryAddressUnsafe(result$, swiftArena)) : Optional.empty();
         }
         """,
         """
@@ -184,10 +184,10 @@ struct JNIOptionalTests {
           let arg$ = UnsafeMutablePointer<MyClass>(bitPattern: argBits$)
           let result$: jlong
           if let innerResult$ = SwiftModule.optionalClass(arg$?.pointee) {
-            let _result$ = UnsafeMutablePointer<MyClass>.allocate(capacity: 1)
-            _result$.initialize(to: innerResult$)
-            let _resultBits$ = Int64(Int(bitPattern: _result$))
-            result$ = _resultBits$.getJNIValue(in: environment)
+            let resultWrapped$ = UnsafeMutablePointer<MyClass>.allocate(capacity: 1)
+            resultWrapped$.initialize(to: innerResult$)
+            let resultWrappedBits$ = Int64(Int(bitPattern: resultWrapped$))
+            result$ = resultWrappedBits$.getJNILocalRefValue(in: environment)
             var flag$ = Int8(1)
             environment.interface.SetByteArrayRegion(environment, result_discriminator$, 0, 1, &flag$)
           }
@@ -218,7 +218,7 @@ struct JNIOptionalTests {
          * public func optionalJavaKitClass(_ arg: JavaLong?)
          * }
          */
-        public static void optionalJavaKitClass(Optional<java.lang.Long> arg) {
+        public static void optionalJavaKitClass(java.util.Optional<java.lang.Long> arg) {
           SwiftModule.$optionalJavaKitClass(arg.orElse(null));
         }
         """,
@@ -247,6 +247,35 @@ struct JNIOptionalTests {
           )
         }
         """
+      ]
+    )
+  }
+
+  @Test
+  func optionalTuple() throws {
+    let input = """
+      public struct Foo {}
+      public func optionalTuple() -> (Int64?, Foo)? {
+        (42, Foo())
+      }
+      """
+
+    try assertOutput(
+      input: input,
+      .jni,
+      .java,
+      detectChunkByInitialLines: 2,
+      expectedChunks: [
+        """
+        byte[] result$_discriminator$ = new byte[1];
+        byte[] resultWrapped$_0$$_discriminator$ = new byte[1];
+        long[] resultWrapped$_0$ = new long[1];
+        long[] resultWrapped$_1$ = new long[1];
+        SwiftModule.$optionalTuple(result$_discriminator$, resultWrapped$_0$$_discriminator$, resultWrapped$_0$, resultWrapped$_1$);
+        """,
+        """
+        private static native void $optionalTuple(byte[] result_discriminator$, byte[] resultWrapped_0$_discriminator$, long[] resultWrapped_0$, long[] resultWrapped_1$);
+        """,
       ]
     )
   }

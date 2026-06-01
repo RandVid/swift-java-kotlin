@@ -63,8 +63,7 @@ package class SwiftNominalTypeDeclaration: SwiftTypeDeclaration {
   }
 
   /// The syntax node this declaration is derived from.
-  /// Can be `nil` if this is loaded from a .swiftmodule.
-  let syntax: NominalTypeDeclSyntaxNode?
+  let syntax: NominalTypeDeclSyntaxNode
 
   /// The kind of nominal type.
   let kind: Kind
@@ -73,24 +72,30 @@ package class SwiftNominalTypeDeclaration: SwiftTypeDeclaration {
   /// MyCollection.Iterator.
   let parent: SwiftNominalTypeDeclaration?
 
-  // TODO: Generic parameters.
+  /// The generic parameters of this nominal type.
+  let genericParameters: [SwiftGenericParameterDeclaration]
 
   /// Identify this nominal declaration as one of the known standard library
   /// types, like 'Swift.Int[.
-  lazy var knownTypeKind: SwiftKnownTypeDeclKind? = {
+  private(set) lazy var knownTypeKind: SwiftKnownTypeDeclKind? = {
     self.computeKnownStandardLibraryType()
   }()
 
   /// Create a nominal type declaration from the syntax node for a nominal type
   /// declaration.
   init(
+    name: String,
     sourceFilePath: String,
     moduleName: String,
     parent: SwiftNominalTypeDeclaration?,
-    node: NominalTypeDeclSyntaxNode
+    node: NominalTypeDeclSyntaxNode,
   ) {
     self.parent = parent
     self.syntax = node
+    self.genericParameters =
+      node.asProtocol(WithGenericParametersSyntax.self)?.genericParameterClause?.parameters.map {
+        SwiftGenericParameterDeclaration(sourceFilePath: sourceFilePath, moduleName: moduleName, node: $0)
+      } ?? []
 
     // Determine the kind from the syntax node.
     switch Syntax(node).as(SyntaxEnum.self) {
@@ -101,11 +106,11 @@ package class SwiftNominalTypeDeclaration: SwiftTypeDeclaration {
     case .structDecl: self.kind = .struct
     default: fatalError("Not a nominal type declaration")
     }
-    super.init(sourceFilePath: sourceFilePath, moduleName: moduleName, name: node.name.text)
+    super.init(sourceFilePath: sourceFilePath, moduleName: moduleName, name: name)
   }
 
-  lazy var firstInheritanceType: TypeSyntax? = {
-    guard let firstInheritanceType = self.syntax?.inheritanceClause?.inheritedTypes.first else {
+  private(set) lazy var firstInheritanceType: TypeSyntax? = {
+    guard let firstInheritanceType = self.syntax.inheritanceClause?.inheritedTypes.first else {
       return nil
     }
 
@@ -113,13 +118,17 @@ package class SwiftNominalTypeDeclaration: SwiftTypeDeclaration {
   }()
 
   var inheritanceTypes: InheritedTypeListSyntax? {
-    self.syntax?.inheritanceClause?.inheritedTypes
+    self.syntax.inheritanceClause?.inheritedTypes
+  }
+
+  var genericWhereClause: GenericWhereClauseSyntax? {
+    self.syntax.asProtocol(WithGenericParametersSyntax.self)?.genericWhereClause
   }
 
   /// Returns true if this type conforms to `Sendable` and therefore is "threadsafe".
-  lazy var isSendable: Bool = {
+  private(set) lazy var isSendable: Bool = {
     // Check if Sendable is in the inheritance list
-    guard let inheritanceClause = self.syntax?.inheritanceClause else {
+    guard let inheritanceClause = self.syntax.inheritanceClause else {
       return false
     }
 
@@ -142,12 +151,23 @@ package class SwiftNominalTypeDeclaration: SwiftTypeDeclaration {
     return SwiftKnownTypeDeclKind(rawValue: "\(moduleName).\(name)")
   }
 
-  package var qualifiedName: String {
+  /// Structured qualified type name built from the parent chain
+  package var qualifiedTypeName: SwiftQualifiedTypeName {
     if let parent = self.parent {
-      return parent.qualifiedName + "." + name
+      return SwiftQualifiedTypeName(parent.qualifiedTypeName.components + [name])
     } else {
-      return name
+      return SwiftQualifiedTypeName(name)
     }
+  }
+
+  package var qualifiedName: String {
+    qualifiedTypeName.fullName
+  }
+
+  /// Like `qualifiedName` but with dots replaced by underscores, suitable for
+  /// use in C symbol names and Java identifiers
+  package var flatName: String {
+    qualifiedTypeName.fullFlatName
   }
 
   var isReferenceType: Bool {
@@ -156,6 +176,20 @@ package class SwiftNominalTypeDeclaration: SwiftTypeDeclaration {
       return true
     case .enum, .struct, .protocol:
       return false
+    }
+  }
+
+  var isGeneric: Bool {
+    !genericParameters.isEmpty
+  }
+}
+
+extension SwiftNominalTypeDeclaration: CustomStringConvertible {
+  package var description: String {
+    if isGeneric {
+      "\(qualifiedName)<\(genericParameters.map(\.name).joined(separator: ", "))>"
+    } else {
+      qualifiedName
     }
   }
 }
@@ -167,6 +201,44 @@ package class SwiftGenericParameterDeclaration: SwiftTypeDeclaration {
     sourceFilePath: String,
     moduleName: String,
     node: GenericParameterSyntax
+  ) {
+    self.syntax = node
+    super.init(sourceFilePath: sourceFilePath, moduleName: moduleName, name: node.name.text)
+  }
+
+  var hasEach: Bool {
+    syntax.specifier?.tokenKind == .keyword(.each)
+  }
+
+  var packReferenceName: String {
+    if hasEach {
+      "each \(name)"
+    } else {
+      name
+    }
+  }
+
+  var packExpansionName: String {
+    if hasEach {
+      "repeat each \(name)"
+    } else {
+      name
+    }
+  }
+}
+
+/// A plain typealias will resolve as the right hand type in generated code.
+///
+/// A typealias used as a specialization of a generic type will be emitted as
+/// a new concrete type in the Java. This way we can specialize `FishBox` from
+/// `Box<T>` by doing `typealias FishBox = Box<Fish>`.
+package final class SwiftTypeAliasDeclaration: SwiftTypeDeclaration {
+  let syntax: TypeAliasDeclSyntax
+
+  init(
+    sourceFilePath: String,
+    moduleName: String,
+    node: TypeAliasDeclSyntax
   ) {
     self.syntax = node
     super.init(sourceFilePath: sourceFilePath, moduleName: moduleName, name: node.name.text)

@@ -13,6 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 import JExtractSwiftLib
+import SwiftJavaConfigurationShared
 import Testing
 
 @Suite
@@ -56,13 +57,13 @@ struct JNIStructTests {
       expectedChunks: [
         """
         public final class MyStruct implements JNISwiftInstance {
-          static final String LIB_NAME = "SwiftModule";
+          static final java.lang.String LIB_NAME = "SwiftModule";
 
           @SuppressWarnings("unused")
           private static final boolean INITIALIZED_LIBS = initializeLibs();
           static boolean initializeLibs() {
-            System.loadLibrary(SwiftLibraries.LIB_NAME_SWIFT_JAVA);
-            System.loadLibrary(LIB_NAME);
+            SwiftLibraries.loadLibraryWithFallbacks(SwiftLibraries.LIB_NAME_SWIFT_JAVA);
+            SwiftLibraries.loadLibraryWithFallbacks(LIB_NAME);
             return true;
           }
         """,
@@ -70,6 +71,7 @@ struct JNIStructTests {
         private MyStruct(long selfPointer, SwiftArena swiftArena) {
           SwiftObjects.requireNonZero(selfPointer, "selfPointer");
           this.selfPointer = selfPointer;
+          this.$cleanup = $createCleanup();
 
           // Only register once we have fully initialized the object since this will need the object pointer.
           swiftArena.register(this);
@@ -80,43 +82,6 @@ struct JNIStructTests {
           return new MyStruct(selfPointer, swiftArena);
         }
         """,
-      ]
-    )
-    try assertOutput(
-      input: source,
-      .jni,
-      .java,
-      expectedChunks: [
-        """
-        private static native void $destroy(long selfPointer);
-        """
-      ]
-    )
-    try assertOutput(
-      input: source,
-      .jni,
-      .java,
-      expectedChunks: [
-        """
-        @Override
-        public Runnable $createDestroyFunction() {
-          long self$ = this.$memoryAddress();
-          if (CallTraces.TRACE_DOWNCALLS) {
-            CallTraces.traceDowncall("MyStruct.$createDestroyFunction",
-                "this", this,
-                "self", self$);
-          }
-          return new Runnable() {
-            @Override
-            public void run() {
-              if (CallTraces.TRACE_DOWNCALLS) {
-                CallTraces.traceDowncall("MyStruct.$destroy", "self", self$);
-              }
-              MyStruct.$destroy(self$);
-            }
-          };
-        }
-        """
       ]
     )
   }
@@ -135,8 +100,8 @@ struct JNIStructTests {
          * public init(x: Int64, y: Int64)
          * }
          */
-        public static MyStruct init(long x, long y, SwiftArena swiftArena$) {
-          return MyStruct.wrapMemoryAddressUnsafe(MyStruct.$init(x, y), swiftArena$);
+        public static MyStruct init(long x, long y, SwiftArena swiftArena) {
+          return MyStruct.wrapMemoryAddressUnsafe(MyStruct.$init(x, y), swiftArena);
         }
         """,
         """
@@ -160,33 +125,7 @@ struct JNIStructTests {
           let result$ = UnsafeMutablePointer<MyStruct>.allocate(capacity: 1)
           result$.initialize(to: MyStruct.init(x: Int64(fromJNI: x, in: environment), y: Int64(fromJNI: y, in: environment)))
           let resultBits$ = Int64(Int(bitPattern: result$))
-          return resultBits$.getJNIValue(in: environment)
-        }
-        """
-      ]
-    )
-  }
-
-  @Test
-  func destroyFunction_swiftThunks() throws {
-    try assertOutput(
-      input: source,
-      .jni,
-      .swift,
-      expectedChunks: [
-        """
-        @_cdecl("Java_com_example_swift_MyStruct__00024destroy__J")
-        public func Java_com_example_swift_MyStruct__00024destroy__J(environment: UnsafeMutablePointer<JNIEnv?>!, thisClass: jclass, selfPointer: jlong) {
-          guard let env$ = environment else {
-            fatalError("Missing JNIEnv in downcall to \\(#function)")
-          }
-          assert(selfPointer != 0, "selfPointer memory address was null")
-          let selfBits$ = Int(Int64(fromJNI: selfPointer, in: env$))
-          guard let self$ = UnsafeMutablePointer<MyStruct>(bitPattern: selfBits$) else {
-            fatalError("self memory address was null in call to \\(#function)!")
-          }
-          self$.deinitialize(count: 1)
-          self$.deallocate()
+          return resultBits$.getJNILocalRefValue(in: environment)
         }
         """
       ]
@@ -212,7 +151,7 @@ struct JNIStructTests {
         }
         """,
         """
-        private static native void $doSomething(long x, long self);
+        private static native void $doSomething(long x, long selfPointer);
         """,
       ]
     )
@@ -228,16 +167,39 @@ struct JNIStructTests {
       expectedChunks: [
         """
         @_cdecl("Java_com_example_swift_MyStruct__00024doSomething__JJ")
-        public func Java_com_example_swift_MyStruct__00024doSomething__JJ(environment: UnsafeMutablePointer<JNIEnv?>!, thisClass: jclass, x: jlong, self: jlong) {
-          assert(self != 0, "self memory address was null")
-          let selfBits$ = Int(Int64(fromJNI: self, in: environment))
-          let self$ = UnsafeMutablePointer<MyStruct>(bitPattern: selfBits$)
-          guard let self$ else {
-            fatalError("self memory address was null in call to \\(#function)!")
+        public func Java_com_example_swift_MyStruct__00024doSomething__JJ(environment: UnsafeMutablePointer<JNIEnv?>!, thisClass: jclass, x: jlong, selfPointer: jlong) {
+          assert(selfPointer != 0, "selfPointer memory address was null")
+          let selfPointerBits$ = Int(Int64(fromJNI: selfPointer, in: environment))
+          let selfPointer$ = UnsafeMutablePointer<MyStruct>(bitPattern: selfPointerBits$)
+          guard let selfPointer$ else {
+            fatalError("selfPointer memory address was null in call to \\(#function)!")
           }
-          self$.pointee.doSomething(x: Int64(fromJNI: x, in: environment))
+          selfPointer$.pointee.doSomething(x: Int64(fromJNI: x, in: environment))
         }
         """
+      ]
+    )
+  }
+
+  @Test
+  func generatesStructJavaClass_overrideStaticBlockLibraryLoading_empty() throws {
+    var config = Configuration()
+    config.overrideStaticBlockLibraryLoading = []
+
+    try assertOutput(
+      input: source,
+      config: config,
+      .jni,
+      .java,
+      expectedChunks: [
+        """
+        public final class MyStruct implements JNISwiftInstance {
+          static final java.lang.String LIB_NAME = "SwiftModule";
+        """
+      ],
+      notExpectedChunks: [
+        "loadLibraryWithFallbacks",
+        "initializeLibs",
       ]
     )
   }

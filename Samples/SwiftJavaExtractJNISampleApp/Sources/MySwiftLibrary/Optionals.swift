@@ -14,6 +14,12 @@
 
 import SwiftJava
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
+import Foundation
+#endif
+
 public func optionalBool(input: Bool?) -> Bool? {
   input
 }
@@ -54,6 +60,14 @@ public func optionalClass(input: MySwiftClass?) -> MySwiftClass? {
   input
 }
 
+public func optionalDate(input: Date?) -> Date? {
+  input
+}
+
+public func optionalData(input: Data?) -> Data? {
+  input
+}
+
 public func optionalJavaKitLong(input: JavaLong?) -> Int64? {
   if let input {
     return input.longValue()
@@ -76,4 +90,12 @@ public func multipleOptionals(
   input7: Bool?
 ) -> Int64? {
   1
+}
+
+public func optionalTuple() -> (Int64, String)? {
+  (42, "hello")
+}
+
+public func optionalTuple2() -> (Int64?, Alignment?)? {
+  (42, .horizontal)
 }

@@ -74,7 +74,7 @@ public class ProtocolCallbacksTest {
         public void withVoid() {}
 
         @Override
-        public MySwiftClass withObject(MySwiftClass input, SwiftArena swiftArena$) {
+        public MySwiftClass withObject(MySwiftClass input, SwiftArena swiftArena) {
             return input;
         }
 
@@ -84,7 +84,7 @@ public class ProtocolCallbacksTest {
         }
 
         @Override
-        public Optional<MySwiftClass> withOptionalObject(Optional<MySwiftClass> input, SwiftArena swiftArena$) {
+        public Optional<MySwiftClass> withOptionalObject(Optional<MySwiftClass> input, SwiftArena swiftArena) {
             return input;
         }
 
@@ -99,7 +99,7 @@ public class ProtocolCallbacksTest {
         }
 
         @Override
-        public MySwiftClass[] withObjectArray(MySwiftClass[] input, SwiftArena swiftArena$) {
+        public MySwiftClass[] withObjectArray(MySwiftClass[] input, SwiftArena swiftArena) {
             return input;
         }
 
@@ -111,6 +111,11 @@ public class ProtocolCallbacksTest {
         @Override
         public void successfulThrowingFunction() throws Exception {
 
+        }
+
+        @Override
+        public Optional<String> withOptionalString(Optional<String> input) {
+            return input;
         }
     }
 
@@ -142,6 +147,7 @@ public class ProtocolCallbacksTest {
             var int64Array = new long[]{1, 2, 3};
             var stringArray = new String[]{"Hey", "there"};
             var objectArray = new MySwiftClass[]{MySwiftClass.init(1, 1, arena), MySwiftClass.init(2, 2, arena)};
+            var optionalString = Optional.of("Hey there!");
             var output = MySwiftLibrary.outputCallbacks(
                     callbacks,
                     true,
@@ -159,6 +165,7 @@ public class ProtocolCallbacksTest {
                     int64Array,
                     stringArray,
                     objectArray,
+                    optionalString,
                     arena
             );
 
@@ -185,6 +192,10 @@ public class ProtocolCallbacksTest {
             assertEquals(2, objectArrayOutput.length);
             assertEquals(1, objectArrayOutput[0].getX());
             assertEquals(2, objectArrayOutput[1].getX());
+
+            var optionalStringOutput = output.getOptionalString();
+            assertTrue(optionalStringOutput.isPresent());
+            assertEquals("Hey there!", optionalStringOutput.get());
         }
     }
 }

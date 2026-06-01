@@ -14,18 +14,32 @@
 
 package org.swift.swiftkit.core;
 
-class JNISwiftInstanceCleanup implements SwiftInstanceCleanup {
-    private final Runnable destroyFunction;
-    private final Runnable markAsDestroyed;
+import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 
-    public JNISwiftInstanceCleanup(Runnable destroyFunction, Runnable markAsDestroyed) {
+class JNISwiftInstanceCleanup implements SwiftInstanceCleanup {
+    private static final AtomicIntegerFieldUpdater<JNISwiftInstanceCleanup> DESTROYED =
+            AtomicIntegerFieldUpdater.newUpdater(JNISwiftInstanceCleanup.class, "destroyed");
+
+    private final Runnable destroyFunction;
+
+    @SuppressWarnings("unused") // accessed via DESTROYED field updater
+    private volatile int destroyed;
+
+    public JNISwiftInstanceCleanup(Runnable destroyFunction) {
         this.destroyFunction = destroyFunction;
-        this.markAsDestroyed = markAsDestroyed;
+    }
+
+    @Override
+    public boolean isDestroyed() {
+        return destroyed != 0;
     }
 
     @Override
     public void run() {
-        markAsDestroyed.run();
-        destroyFunction.run();
+        if (DESTROYED.compareAndSet(this, 0, 1)) {
+            destroyFunction.run();
+        } else {
+            throw new IllegalStateException("Double destruction attempt detected!");
+        }
     }
 }

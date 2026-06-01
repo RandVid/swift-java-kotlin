@@ -32,30 +32,8 @@ struct JNIToStringTests {
       detectChunkByInitialLines: 1,
       expectedChunks: [
         """
-        public String toString() {
-          return $toString(this.$memoryAddress());
-        }
-        """,
-        """
-        private static native java.lang.String $toString(long selfPointer);
-        """,
-      ]
-    )
-  }
-
-  @Test("JNI toString (Swift)")
-  func toString_swift() throws {
-    try assertOutput(
-      input: source,
-      .jni,
-      .swift,
-      detectChunkByInitialLines: 1,
-      expectedChunks: [
-        """
-        @_cdecl("Java_com_example_swift_MyType__00024toString__J")
-        public func Java_com_example_swift_MyType__00024toString__J(environment: UnsafeMutablePointer<JNIEnv?>!, thisClass: jclass, selfPointer: jlong) -> jstring? {
-          ...
-          return String(describing: self$.pointee).getJNIValue(in: environment)
+        public java.lang.String toString() {
+          return SwiftObjects.toString(this.$memoryAddress(), this.$typeMetadataAddress());
         }
         """
       ]
@@ -71,27 +49,8 @@ struct JNIToStringTests {
       detectChunkByInitialLines: 1,
       expectedChunks: [
         """
-        public String toDebugString() {
-          return $toDebugString(this.$memoryAddress());
-        }
-        """
-      ]
-    )
-  }
-
-  @Test("JNI toDebugString (Swift)")
-  func toDebugString_swift() throws {
-    try assertOutput(
-      input: source,
-      .jni,
-      .swift,
-      detectChunkByInitialLines: 1,
-      expectedChunks: [
-        """
-        @_cdecl("Java_com_example_swift_MyType__00024toDebugString__J")
-        public func Java_com_example_swift_MyType__00024toDebugString__J(environment: UnsafeMutablePointer<JNIEnv?>!, thisClass: jclass, selfPointer: jlong) -> jstring? {
-          ...
-          return String(reflecting: self$.pointee).getJNIValue(in: environment)
+        public java.lang.String toDebugString() {
+          return SwiftObjects.toDebugString(this.$memoryAddress(), this.$typeMetadataAddress());
         }
         """
       ]

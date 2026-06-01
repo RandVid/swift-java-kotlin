@@ -41,6 +41,16 @@ struct JNIProtocolTests {
       public func takeComposite(x: any SomeProtocol & B)
     """
 
+  let protocolInheritanceSource = """
+      public protocol ParentProtocol {
+        public func parentMethod()
+      }
+
+      public protocol ChildProtocol: ParentProtocol {
+        public func childMethod()
+      }
+    """
+
   @Test
   func generatesJavaInterface() throws {
     try assertOutput(
@@ -64,7 +74,34 @@ struct JNIProtocolTests {
           ...
           public void method();
           ...
-          public SomeClass withObject(SomeClass c, SwiftArena swiftArena$);
+          public SomeClass withObject(SomeClass c, SwiftArena swiftArena);
+          ...
+        }
+        """,
+      ]
+    )
+  }
+
+  @Test
+  func generatesJavaInterfaceWithInheritedProtocol() throws {
+    try assertOutput(
+      input: protocolInheritanceSource,
+      config: config,
+      .jni,
+      .java,
+      detectChunkByInitialLines: 1,
+      expectedChunks: [
+        """
+        public interface ParentProtocol {
+          ...
+          public void parentMethod();
+          ...
+        }
+        """,
+        """
+        public interface ChildProtocol extends ParentProtocol {
+          ...
+          public void childMethod();
           ...
         }
         """,
@@ -84,7 +121,7 @@ struct JNIProtocolTests {
         """
         public final class SomeClass implements JNISwiftInstance, SomeProtocol {
           ...
-          public SomeClass makeClass(SwiftArena swiftArena$) {
+          public SomeClass makeClass(SwiftArena swiftArena) {
           ...
         }
         """
@@ -133,7 +170,7 @@ struct JNIProtocolTests {
         """
         @_cdecl("Java_com_example_swift_SwiftModule__00024takeProtocol__Ljava_lang_Object_2Ljava_lang_Object_2")
         public func Java_com_example_swift_SwiftModule__00024takeProtocol__Ljava_lang_Object_2Ljava_lang_Object_2(environment: UnsafeMutablePointer<JNIEnv?>!, thisClass: jclass, x: jobject?, y: jobject?) {
-          let xswiftObject$: (SomeProtocol)
+          let xswiftObject$: (any SomeProtocol)
           if environment.interface.IsInstanceOf(environment, x, _JNIMethodIDCache.JNISwiftInstance.class) != 0 {
             ...
             let xpointer$DynamicType$: Any.Type = unsafeBitCast(xpointer$TypeMetadataPointer$, to: Any.Type.self)
@@ -141,10 +178,10 @@ struct JNIProtocolTests {
               fatalError("xpointer$ memory address was null")
             }
             #if hasFeature(ImplicitOpenExistentials)
-            let xpointer$Existential$ = xpointer$RawPointer$.load(as: xpointer$DynamicType$) as! any (SomeProtocol)
+            let xpointer$Existential$ = xpointer$RawPointer$.load(as: xpointer$DynamicType$) as! (any SomeProtocol)
             #else
-            func xpointer$DoLoad<Ty>(_ ty: Ty.Type) -> any (SomeProtocol) {
-              xpointer$RawPointer$.load(as: ty) as! any (SomeProtocol)
+            func xpointer$DoLoad<Ty>(_ ty: Ty.Type) -> (any SomeProtocol) {
+              xpointer$RawPointer$.load(as: ty) as! (any SomeProtocol)
             }
             let xpointer$Existential$ = _openExistential(xpointer$DynamicType$, do: xpointer$DoLoad)
             #endif
@@ -153,7 +190,7 @@ struct JNIProtocolTests {
           else {
             xswiftObject$ = _SwiftModule_takeProtocol_x_Wrapper(_javaSomeProtocolInterface: JavaSomeProtocol(javaThis: x!, environment: environment))
           }
-          let yswiftObject$: (SomeProtocol)
+          let yswiftObject$: (any SomeProtocol)
           if environment.interface.IsInstanceOf(environment, y, _JNIMethodIDCache.JNISwiftInstance.class) != 0 {
             ...
             yswiftObject$ = ypointer$Existential$
@@ -209,7 +246,7 @@ struct JNIProtocolTests {
         """
         @_cdecl("Java_com_example_swift_SwiftModule__00024takeGeneric__Ljava_lang_Object_2")
         public func Java_com_example_swift_SwiftModule__00024takeGeneric__Ljava_lang_Object_2(environment: UnsafeMutablePointer<JNIEnv?>!, thisClass: jclass, s: jobject?) {
-          let sswiftObject$: (SomeProtocol)
+          let sswiftObject$: (any SomeProtocol)
           if environment.interface.IsInstanceOf(environment, s, _JNIMethodIDCache.JNISwiftInstance.class) != 0 {
             ...
             sswiftObject$ = spointer$Existential$
@@ -267,7 +304,7 @@ struct JNIProtocolTests {
         """
         @_cdecl("Java_com_example_swift_SwiftModule__00024takeComposite__Ljava_lang_Object_2")
         public func Java_com_example_swift_SwiftModule__00024takeComposite__Ljava_lang_Object_2(environment: UnsafeMutablePointer<JNIEnv?>!, thisClass: jclass, x: jobject?) {
-          let xswiftObject$: (SomeProtocol & B)
+          let xswiftObject$: (any (SomeProtocol & B))
           if environment.interface.IsInstanceOf(environment, x, _JNIMethodIDCache.JNISwiftInstance.class) != 0 {
             let xpointer$ = environment.interface.CallLongMethodA(environment, x, _JNIMethodIDCache.JNISwiftInstance.memoryAddress, [])
             let xtypeMetadata$ = environment.interface.CallLongMethodA(environment, x, _JNIMethodIDCache.JNISwiftInstance.typeMetadataAddress, [])
@@ -279,10 +316,10 @@ struct JNIProtocolTests {
               fatalError("xpointer$ memory address was null")
             }
             #if hasFeature(ImplicitOpenExistentials)
-            let xpointer$Existential$ = xpointer$RawPointer$.load(as: xpointer$DynamicType$) as! any (SomeProtocol & B)
+            let xpointer$Existential$ = xpointer$RawPointer$.load(as: xpointer$DynamicType$) as! (any (SomeProtocol & B))
             #else
-            func xpointer$DoLoad<Ty>(_ ty: Ty.Type) -> any (SomeProtocol & B) {
-              xpointer$RawPointer$.load(as: ty) as! any (SomeProtocol & B)
+            func xpointer$DoLoad<Ty>(_ ty: Ty.Type) -> (any (SomeProtocol & B)) {
+              xpointer$RawPointer$.load(as: ty) as! (any (SomeProtocol & B))
             }
             let xpointer$Existential$ = _openExistential(xpointer$DynamicType$, do: xpointer$DoLoad)
             #endif
@@ -315,18 +352,24 @@ struct JNIProtocolTests {
         """
         extension SwiftJavaSomeProtocolWrapper {
           public func method() {
-            _javaSomeProtocolInterface.method()
+            let environment$ = try! JavaVirtualMachine.shared().environment()
+            try! environment$.withLocalFrame(capacity: 4) {
+              _javaSomeProtocolInterface.method()
+            }
           }
           public func withObject(c: SomeClass) -> SomeClass {
-            let cClass = try! JavaClass<JavaSomeClass>(environment: JavaVirtualMachine.shared().environment())
-            let cPointer = UnsafeMutablePointer<SomeClass>.allocate(capacity: 1)
-            cPointer.initialize(to: c)
-            guard let unwrapped$ = _javaSomeProtocolInterface.withObject(cClass.wrapMemoryAddressUnsafe(Int64(Int(bitPattern: cPointer))), JavaSwiftArena.defaultAutoArena) else {
-              fatalError("Upcall to withObject unexpectedly returned nil")
+            let environment$ = try! JavaVirtualMachine.shared().environment()
+            return try! environment$.withLocalFrame(capacity: 6) {
+              let cClass = try! JavaClass<JavaSomeClass>(environment: JavaVirtualMachine.shared().environment())
+              let cPointer = UnsafeMutablePointer<SomeClass>.allocate(capacity: 1)
+              cPointer.initialize(to: c)
+              guard let unwrapped$ = _javaSomeProtocolInterface.withObject(cClass.wrapMemoryAddressUnsafe(Int64(Int(bitPattern: cPointer))), JavaSwiftArena.defaultAutoArena) else {
+                fatalError("Upcall to withObject unexpectedly returned nil")
+              }
+              let result$MemoryAddress$ = unwrapped$.as(JavaJNISwiftInstance.self)!.memoryAddress()
+              let result$Pointer = UnsafeMutablePointer<SomeClass>(bitPattern: Int(result$MemoryAddress$))!
+              return result$Pointer.pointee
             }
-            let result$MemoryAddress$ = unwrapped$.as(JavaJNISwiftInstance.self)!.memoryAddress()
-            let result$Pointer = UnsafeMutablePointer<SomeClass>(bitPattern: Int(result$MemoryAddress$))!
-            return result$Pointer.pointee
           }
         }
         """,
@@ -337,6 +380,39 @@ struct JNIProtocolTests {
         """,
         """
         extension SwiftJavaBWrapper {
+        }
+        """,
+      ]
+    )
+  }
+
+  @Test
+  func generatesProtocolWrappersWithInheritedProtocol() throws {
+    try assertOutput(
+      input: protocolInheritanceSource,
+      config: config,
+      .jni,
+      .swift,
+      detectChunkByInitialLines: 1,
+      expectedChunks: [
+        """
+        protocol SwiftJavaParentProtocolWrapper: ParentProtocol {
+          var _javaParentProtocolInterface: JavaParentProtocol { get }
+        }
+        """,
+        """
+        protocol SwiftJavaChildProtocolWrapper: ChildProtocol, SwiftJavaParentProtocolWrapper {
+          var _javaChildProtocolInterface: JavaChildProtocol { get }
+        }
+        """,
+        """
+        extension SwiftJavaChildProtocolWrapper {
+          var _javaParentProtocolInterface: JavaParentProtocol {
+            _javaChildProtocolInterface
+          }
+          public func childMethod() {
+            ...
+          }
         }
         """,
       ]

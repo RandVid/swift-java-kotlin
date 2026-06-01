@@ -58,11 +58,17 @@ SwiftJava's `swift-java jextract` tool automates generating Java bindings from S
 | Stored properties: `var`, `let` (with `willSet`, `didSet`)                           | ✅        | ✅   |
 | Computed properties: `var` (incl. `throws`)                                          | ✅ / TODO | ✅   |
 | Async functions `func async` and properties: `var { get async {} }`                  | ❌        | ✅   |
-| Arrays: `[UInt8]`, `[MyType]`, `Array<Int64>` etc                                    | ❌        | ✅   |
-| Dictionaries: `[String: Int]`, `[K:V]`                                               | ❌        | ❌   |
+| Arrays: `[UInt8]`                                                                    | ✅        | ✅   |
+| Arrays: `[MyType]`, `Array<Int64>` etc                                               | ❌        | ✅   |
+| Dictionaries: `[String: Int]`, `[K:V]`                                               | ❌        | ✅   |
+| Generic type: `struct S<T>`                                                          | ❌        | ✅   |
+| Functions or properties using generic type param: `struct S<T> { func f(_: T) {} }`  | ❌        | ❌   |
+| Generic parameters over `some DataProtocol` handled with efficient Java type         | ✅        | ✅   |
+| Generic type specialization and conditional extensions: `struct S<T>{} extension S where T == Value {}` |  ❌ | ✅  |
+| Static functions or properties in generic type                                       | ❌        | ❌   | 
 | Generic parameters in functions: `func f<T: A & B>(x: T)`                            | ❌        | ✅   |
 | Generic return values in functions: `func f<T: A & B>() -> T`                        | ❌        | ❌   |
-| Tuples: `(Int, String)`, `(A, B, C)`                                                 | ❌        | ❌   |
+| Tuples: `(Int, String)`, `(A, B, C)`                                                 | ✅        | ✅   |
 | Protocols: `protocol`                                                                | ❌        | ✅   |
 | Protocols: `protocol` with associated types                                          | ❌        | ❌   |
 | Protocols static requirements: `static func`, `init(rawValue:)`                      | ❌        | ❌   |
@@ -82,13 +88,14 @@ SwiftJava's `swift-java jextract` tool automates generating Java bindings from S
 | Unsigned primitive types: `UInt`, `UInt8`, `UInt16`, `UInt32`, `UInt64`              | ✅ *      | ✅ * |
 | String (with copying data)                                                           | ✅        | ✅   |
 | Variadic parameters: `T...`                                                          | ❌        | ❌   |
-| Parametrer packs / Variadic generics                                                 | ❌        | ❌   |
+| Parametrer packs / Variadic generics                                                 | ❌        | 🟡   |
 | Ownership modifiers: `inout`, `borrowing`, `consuming`                               | ❌        | ❌   |
 | Default parameter values: `func p(name: String = "")`                                | ❌        | ❌   |
 | Operators: `+`, `-`, user defined                                                    | ❌        | ❌   |
 | Subscripts: `subscript()`                                                            | ✅        | ✅   |
 | Equatable                                                                            | ❌        | ❌   |
-| Pointers: `UnsafeRawPointer`, UnsafeBufferPointer (?)                                | 🟡       | ❌   |
+| Pointers: `UnsafeRawPointer`                                                         | 🟡        | ❌   |
+| Pointers as parameters: `UnsafeRawBufferPointer` (as `byte[]`)                       | ❌        | ✅   |
 | Nested types: `struct Hello { struct World {} }`                                     | ❌        | ✅   |
 | Inheritance: `class Caplin: Capybara`                                                | ❌        | ❌   |
 | Non-escaping `Void` closures: `func callMe(maybe: () -> ())`                                      | ✅        | ✅   |
@@ -107,7 +114,7 @@ SwiftJava's `swift-java jextract` tool automates generating Java bindings from S
 
 > tip: The list of features may be incomplete, please file an issue if something is unclear or should be clarified in this table.
 
-## Detailed feature support discussion
+## Detailed jextract feature support discussion
 
 ### Unsigned integers
 
@@ -173,6 +180,16 @@ which offers utility methods to efficiently copy the underlying native data into
 
 Unlike the FFM mode, a true zero-copy `withUnsafeBytes` is not available.
 
+### Collections
+
+SwiftJava automatically handles collections crossing the language boundary in the most efficient way possible.
+
+### Swift Dictionary as `java.util.Map`
+
+When extracting Swift methods which accept or return a Swift dictionary (often spelled as `[Key: Value]`), jextract (in JNI mode) will convert the return type to a `SwiftDictionaryMap<Key, Value>` Java type.
+
+The `SwiftDictionaryMap` wrapper type refers to the actual Swift dictionary value on the Swift heap and does not copy it out into the Java heap, unless explicitly copied using the `SwiftDictionaryMap::toJava` method.
+
 ### Enums
 
 > Note: Enums are currently only supported in JNI mode.
@@ -191,7 +208,7 @@ You can then instantiate a case of `Vehicle` by using one of the static methods:
 ```java
 try (var arena = SwiftArena.ofConfined()) {
     Vehicle vehicle = Vehicle.car("BMW", arena);
-    Optional<Vehicle.Car> car = vehicle.getAsCar();
+    Optional<Vehicle.Case.Car> car = vehicle.getAsCar();
     assertEquals("BMW", car.orElseThrow().arg0());
 }
 ```
@@ -200,10 +217,10 @@ As you can see above, to access the associated values of a case you can call one
 ```java
 try (var arena = SwiftArena.ofConfined()) {
     Vehicle vehicle = Vehicle.bycicle("My Brand", arena);
-    Optional<Vehicle.Car> car = vehicle.getAsCar();
+    Optional<Vehicle.Case.Car> car = vehicle.getAsCar();
     assertFalse(car.isPresent());
     
-    Optional<Vehicle.Bicycle> bicycle = vehicle.getAsBicycle();
+    Optional<Vehicle.Case.Bicycle> bicycle = vehicle.getAsBicycle();
     assertEquals("My Brand", bicycle.orElseThrow().maker());
 }
 ```
@@ -229,10 +246,10 @@ If you are running Java 21+ you can use [pattern matching for switch](https://op
 ```java
 Vehicle vehicle = ...;
 switch (vehicle.getCase()) {
-    case Vehicle.Bicycle b:
+    case Vehicle.Case.Bicycle b:
         System.out.println("Bicycle maker: " + b.maker());
         break;
-    case Vehicle.Car c:
+    case Vehicle.Case.Car c:
         System.out.println("Car: " + c.arg0());
         break;
 }
@@ -241,7 +258,7 @@ or even, destructuring the records in the switch statement's pattern match direc
 ```java
 Vehicle vehicle = ...;
 switch (vehicle.getCase()) {
-    case Vehicle.Car(var name, var unused):
+    case Vehicle.Case.Car(var name, var unused):
         System.out.println("Car: " + name);
         break;
     default:
@@ -253,9 +270,9 @@ For Java 16+ you can use [pattern matching for instanceof](https://openjdk.org/j
 ```java
 Vehicle vehicle = ...;
 Vehicle.Case case = vehicle.getCase();
-if (case instanceof Vehicle.Bicycle b) {
+if (case instanceof Vehicle.Case.Bicycle b) {
     System.out.println("Bicycle maker: " + b.maker());
-} else if(case instanceof Vehicle.Car c) {
+} else if(case instanceof Vehicle.Case.Car c) {
     System.out.println("Car: " + c.arg0());
 }
 ```
@@ -263,11 +280,11 @@ For any previous Java versions you can resort to casting the `Case` to the expec
 ```java
 Vehicle vehicle = ...;
 Vehicle.Case case = vehicle.getCase();
-if (case instanceof Vehicle.Bicycle) {
-    Vehicle.Bicycle b = (Vehicle.Bicycle) case;
+if (case instanceof Vehicle.Case.Bicycle) {
+    Vehicle.Bicycle b = (Vehicle.Case.Bicycle) case;
     System.out.println("Bicycle maker: " + b.maker());
-} else if(case instanceof Vehicle.Car) {
-    Vehicle.Car c = (Vehicle.Car) case;
+} else if(case instanceof Vehicle.Case.Car) {
+    Vehicle.Car c = (Vehicle.Case.Car) case;
     System.out.println("Car: " + c.arg0());
 }
 ```
@@ -354,3 +371,133 @@ This is a mode for legacy platforms, where `CompletableFuture` is not available,
 In this mode `async` functions in Swift are extracted as Java methods returning a `java.util.concurrent.Future`.
 To enable this mode pass the `--async-func-mode future` command line option, 
 or set the `asyncFuncMode` configuration value in `swift-java.config`
+
+### Generic types
+
+> Note: Generic types are currently only supported in JNI mode. 
+
+Support for generic types is still work-in-progress and limited.
+Any members containing type parameters (such as T) are not exported.
+
+```swift
+public struct MyID<T> {
+  // Not exported: Contains the type parameter 'T'
+  public var rawValue: T 
+  
+  // Not exported: The initializer depends on 'T'
+  public init(rawValue: T) { 
+    self.rawValue = rawValue
+  }
+  
+  // Exported: Does not depend on 'T'
+  public var description: String { "\(rawValue)" } 
+  
+  // Not exported: Although it doesn't use 'T' directly, 
+  // it is a member of a generic context (MyID<T>.foo).
+  public static func foo() -> String { "" } 
+}
+
+// Exported: A specialized function with a concrete type (MyID<Int>)
+public func makeIntID() -> MyID<Int> { 
+  ...
+}
+```
+
+will be exported as
+
+```java
+public final class MyID<T> implements JNISwiftInstance {
+    public String getDescription();
+}
+
+public final class MySwiftLibrary {
+    public static MyID<java.lang.Long> makeIntID();
+} 
+```
+
+### Specializing generic types
+
+> Note: Generic specialization is currently only supported in JNI mode. 
+
+Because Swift's rich generics and extensions system, it is possible to encounter APIs which are not safely expressible in Java,
+such as conditional/constrained extensions on types when an element is of specific type.
+
+A common example of this is e.g. a container type which gains additional methods when the element is of some type, like this:
+
+```swift
+struct Box<Element> {
+    var name: String
+}
+```
+
+which is extended with a conditional `where` clause:
+
+```swift
+extension Box where Element == Fish {
+    func watchTheFish() { }
+}
+```
+
+This method is not available on any `Box` and therefore we cannot safely expose it on the Java `Box` wrapper type.
+
+It would be possible to expose it and check at runtime if the `Box.Element` is of the expected type, this however 
+would result in runtime throws and is not an ideal experience when developers primarily use some specific _specialize_
+types like the `FishBox`:
+
+```swift
+typealias FishBox = Box<Fish>
+```
+
+The jextract tool will automatically detect typealiases like this and perform _specialization_ on them, i.e. a new
+`FishBox` type will be exposed on the Java side, and it will have all matching extensions applied to it, i.e. it
+will have the `watchTheFish()` method available in a type-safe and always known to work correctly way.
+
+In other words, this results in a Java class like this:
+
+```java
+/// Specialization of `Fish<Box>`.
+public final class FishBox ... {
+
+    public void watchTheFish() { ... }
+}
+```
+
+> NOTE: Currently no helpers are available to convert between unspecialized types to specialized ones, but this can be offered 
+>       as additional `box.as(FishBox.class)` conversion methods in the future.
+
+### Evaluating `#if`
+
+In jextract, `#if` branches are evaluated using [SwiftIfConfig](https://github.com/swiftlang/swift-syntax/blob/main/Sources/SwiftIfConfig/SwiftIfConfig.docc/SwiftIfConfig.md).
+The evaluation parameters are fixed; for example, the `os` expression always evaluates to true, so in the following case the value of the variable will be `Linux`.
+
+```swift
+#if os(Linux)
+let os = "Linux"
+#elseif os(Android)
+let os = "Android"
+#else
+let os = "Other"
+#endif
+```
+
+If you want the above situation to be evaluated as `Android`, you can override the evaluation parameters.
+First, obtain a [StaticBuildConfiguration](https://github.com/swiftlang/swift-syntax/blob/main/Sources/SwiftIfConfig/StaticBuildConfiguration.swift) with the following command and save it to a file.
+(Adjust `-target` to match the environment you want to build for. This command is available from Swift 6.3.)
+
+```sh
+swift frontend -print-static-build-config -target aarch64-unknown-linux-android28 > static-build-config.json
+```
+
+Then pass the path to that file when running jextract.
+
+- When using the jextract command: `--static-build-config <Path to JSON>`
+- When configuring via `swift-java.config`:
+    ```json
+    {
+        ...
+        "staticBuildConfigurationFile": "<Path to JSON>" // Relative path from `swift-java.config`
+    }
+    ```
+
+As a result, jextract will evaluate `os` as `Android`.
+

@@ -31,7 +31,7 @@ extension ImplicitlyUnwrappedOptionalTypeSyntax {
       wrappedType: wrappedType,
       self.unexpectedBetweenWrappedTypeAndExclamationMark,
       self.unexpectedAfterExclamationMark,
-      trailingTrivia: self.trailingTrivia
+      trailingTrivia: self.trailingTrivia,
     )
   }
 }
@@ -96,7 +96,7 @@ extension DeclModifierSyntax {
 
 extension WithModifiersSyntax {
   func isPublic(in type: NominalTypeDeclSyntaxNode?) -> Bool {
-    if let type, case .protocolDecl(let protocolDecl) = Syntax(type).as(SyntaxEnum.self) {
+    if let protocolDecl = type?.as(ProtocolDeclSyntax.self) {
       return protocolDecl.isPublic(in: nil)
     }
 
@@ -106,12 +106,8 @@ extension WithModifiersSyntax {
   }
 
   var isAtLeastPackage: Bool {
-    if self.modifiers.isEmpty {
-      return false
-    }
-
-    return self.modifiers.contains { modifier in
-      modifier.isAtLeastInternal
+    self.modifiers.contains { modifier in
+      modifier.isAtLeastPackage
     }
   }
 
@@ -128,13 +124,15 @@ extension WithModifiersSyntax {
 }
 
 extension AttributeListSyntax.Element {
-  /// Whether this node has `SwiftJava` attributes.
-  var isJava: Bool {
+  /// Whether this node has `SwiftJava` wrapping attributes (types that wrap Java classes).
+  /// These are skipped during jextract because they represent Java->Swift wrappers.
+  /// Note: `@JavaExport` is NOT included here — it forces export of Swift types to Java.
+  var isSwiftJavaMacro: Bool {
     guard case let .attribute(attr) = self else {
       // FIXME: Handle #if.
       return false
     }
-    let attrName = attr.attributeName.description
+    guard let attrName = attr.attributeName.as(IdentifierTypeSyntax.self)?.name.text else { return false }
     switch attrName {
     case "JavaClass", "JavaInterface", "JavaField", "JavaStaticField", "JavaMethod", "JavaStaticMethod",
       "JavaImplementation":
@@ -142,6 +140,14 @@ extension AttributeListSyntax.Element {
     default:
       return false
     }
+  }
+
+  /// Whether this is a `@JavaExport` attribute (used on typealiases for specialization,
+  /// or on struct/class/enum to force-include them even when excluded by filters)
+  var isJavaExport: Bool {
+    guard case let .attribute(attr) = self else { return false }
+    guard let attrName = attr.attributeName.as(IdentifierTypeSyntax.self)?.name.text else { return false }
+    return attrName == "JavaExport"
   }
 }
 
@@ -219,8 +225,10 @@ extension DeclSyntaxProtocol {
       } else {
         "var"
       }
+    case .unexpectedCodeDecl(let node):
+      node.trimmedDescription
     case .usingDecl(let node):
-      node.nameForDebug
+      node.trimmedDescription
     }
   }
 
@@ -260,7 +268,7 @@ extension DeclSyntaxProtocol {
                 .with(\.accessorBlock, nil)
                 .with(\.initializer, nil)
             }
-          )
+          ),
         )
         .triviaSanitizedDescription
     case .enumCaseDecl(let node):

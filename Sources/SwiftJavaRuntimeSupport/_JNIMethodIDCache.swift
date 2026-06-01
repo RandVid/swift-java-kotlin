@@ -12,15 +12,27 @@
 //
 //===----------------------------------------------------------------------===//
 
-import CSwiftJavaJNI
 import SwiftJava
+import SwiftJavaJNICore
 
 /// A cache used to hold references for JNI method and classes.
 ///
 /// This type is used internally in by the outputted JExtract wrappers
 /// to improve performance of any JNI lookups.
 public final class _JNIMethodIDCache: Sendable {
-  public struct Method: Hashable {
+  public struct Method: Hashable, Sendable {
+    public let name: String
+    public let signature: String
+    public let isStatic: Bool
+
+    public init(name: String, signature: String, isStatic: Bool = false) {
+      self.name = name
+      self.signature = signature
+      self.isStatic = isStatic
+    }
+  }
+
+  public struct Field: Hashable, Sendable {
     public let name: String
     public let signature: String
     public let isStatic: Bool
@@ -34,6 +46,7 @@ public final class _JNIMethodIDCache: Sendable {
 
   nonisolated(unsafe) let _class: jclass?
   nonisolated(unsafe) let methods: [Method: jmethodID]
+  nonisolated(unsafe) let fields: [Field: jfieldID]
 
   public var javaClass: jclass {
     self._class!
@@ -44,12 +57,13 @@ public final class _JNIMethodIDCache: Sendable {
   /// This is to make sure that the underlying reference remains valid
   nonisolated(unsafe) private let javaObjectHolder: JavaObjectHolder?
 
-  public init(className: String, methods: [Method]) {
+  public init(className: String, methods: [Method] = [], fields: [Field] = []) {
     let environment = try! JavaVirtualMachine.shared().environment()
 
     let clazz: jobject
     if let jniClass = environment.interface.FindClass(environment, className) {
       clazz = environment.interface.NewGlobalRef(environment, jniClass)!
+      environment.interface.DeleteLocalRef(environment, jniClass)
       self.javaObjectHolder = nil
     } else {
       // Clear any ClassNotFound exceptions from FindClass
@@ -89,10 +103,31 @@ public final class _JNIMethodIDCache: Sendable {
         }
       }
     }
+    self.fields = fields.reduce(into: [:]) { (result, field) in
+      if field.isStatic {
+        if let fieldID = environment.interface.GetStaticFieldID(environment, clazz, field.name, field.signature) {
+          result[field] = fieldID
+        } else {
+          fatalError(
+            "Static field \(field.signature) with signature \(field.signature) not found in class \(className)"
+          )
+        }
+      } else {
+        if let fieldID = environment.interface.GetFieldID(environment, clazz, field.name, field.signature) {
+          result[field] = fieldID
+        } else {
+          fatalError("field \(field.signature) with signature \(field.signature) not found in class \(className)")
+        }
+      }
+    }
   }
 
   public subscript(_ method: Method) -> jmethodID? {
     methods[method]
+  }
+
+  public subscript(_ field: Field) -> jfieldID? {
+    fields[field]
   }
 
   public func cleanup(environment: UnsafeMutablePointer<JNIEnv?>!) {

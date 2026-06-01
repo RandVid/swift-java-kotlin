@@ -81,6 +81,14 @@ public class ProtocolTest {
         }
     }
 
+    @Test
+    void useChildProtocolAsParentProtocol() {
+        try (var arena = SwiftArena.ofConfined()) {
+            ProtocolC protoC = ConcreteProtocolC.init(3, 5, arena);
+            assertEquals(3, MySwiftLibrary.takeProtocolB(protoC));
+        }
+    }
+
     static class JavaStorage implements Storage {
         StorageItem item;
 
@@ -89,7 +97,7 @@ public class ProtocolTest {
         }
 
         @Override
-        public StorageItem load(SwiftArena swiftArena$) {
+        public StorageItem load(SwiftArena swiftArena) {
             return item;
         }
 

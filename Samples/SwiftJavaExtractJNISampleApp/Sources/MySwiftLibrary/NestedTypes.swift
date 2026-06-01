@@ -45,3 +45,13 @@ public enum NestedEnum {
     public init() {}
   }
 }
+
+public enum NamespaceEnum {
+  public enum Nested {
+    public static func something() {}
+  }
+
+  public struct NestedGenericType<T> {
+    public var value: Int
+  }
+}

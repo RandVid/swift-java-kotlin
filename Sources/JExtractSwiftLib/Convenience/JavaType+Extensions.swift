@@ -12,9 +12,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-import JavaTypes
+import SwiftJavaJNICore
 
 extension JavaType {
+
   var jniTypeSignature: String {
     switch self {
     case .boolean: return "Z"
@@ -87,6 +88,15 @@ extension JavaType {
     }
   }
 
+  var swiftJniPlaceholderExpr: String {
+    switch self {
+    case .boolean, .byte, .char, .short, .int, .long: "0"
+    case .float, .double: "0.0"
+    case .array, .class: "nil"
+    case .void: "()"
+    }
+  }
+
   var jniCallMethodAName: String {
     switch self {
     case .boolean: "CallBooleanMethodA"
@@ -102,11 +112,27 @@ extension JavaType {
     }
   }
 
+  var jniSetArrayRegionMethodName: String {
+    switch self {
+    case .boolean: "SetBooleanArrayRegion"
+    case .byte: "SetByteArrayRegion"
+    case .char: "SetCharArrayRegion"
+    case .short: "SetShortArrayRegion"
+    case .int: "SetIntArrayRegion"
+    case .long: "SetLongArrayRegion"
+    case .float: "SetFloatArrayRegion"
+    case .double: "SetDoubleArrayRegion"
+    default: fatalError("Set*ArrayRegion is only available for JNI primitive types, was: \(self)")
+    }
+  }
+
   /// Returns whether this type returns `JavaValue` from SwiftJava
   var implementsJavaValue: Bool {
     switch self {
     case .boolean, .byte, .char, .short, .int, .long, .float, .double, .void, .javaLangString:
       true
+    case .array(let element):
+      element.implementsJavaValue
     default:
       false
     }
@@ -144,6 +170,37 @@ extension JavaType {
       true
     default:
       false
+    }
+  }
+
+  /// The boxed class name for this type, suitable for use as a generic type argument.
+  var boxedName: String {
+    switch self {
+    case .boolean: return "Boolean"
+    case .byte: return "Byte"
+    case .char: return "Character"
+    case .short: return "Short"
+    case .int: return "Integer"
+    case .long: return "Long"
+    case .float: return "Float"
+    case .double: return "Double"
+    case .void: return "Void"
+    case .javaLangString: return "String"
+    case .class(let package, let name, let typeParameters):
+      let packagePart: String =
+        if let package {
+          "\(package)."
+        } else {
+          ""
+        }
+      let genericClause: String =
+        if !typeParameters.isEmpty {
+          "<\(typeParameters.map(\.boxedName).joined(separator: ", "))>"
+        } else {
+          ""
+        }
+      return "\(packagePart)\(name)\(genericClause)"
+    case .array: return description
     }
   }
 }

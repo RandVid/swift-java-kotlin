@@ -12,11 +12,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-import JavaTypes
+import SwiftJavaJNICore
 
 /// Represent a parameter in Java code.
 struct JavaParameter {
-  enum ParameterType: CustomStringConvertible {
+  enum ParameterType: Equatable, CustomStringConvertible {
     case concrete(JavaType)
     case generic(name: String, extends: [JavaType])
 
@@ -39,8 +39,16 @@ struct JavaParameter {
       switch self {
       case .concrete(let javaType):
         javaType.isPrimitive
-      case .generic(let name, let extends):
+      case .generic:
         false
+      }
+    }
+
+    /// Returns the concrete JavaType, or `.class` for generics.
+    var javaType: JavaType {
+      switch self {
+      case .concrete(let type): type
+      case .generic: .class(package: "java.lang", name: "Object")
       }
     }
 

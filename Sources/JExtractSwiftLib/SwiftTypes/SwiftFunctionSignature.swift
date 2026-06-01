@@ -58,7 +58,7 @@ public struct SwiftFunctionSignature: Equatable {
 /// Describes the "self" parameter of a Swift function signature.
 enum SwiftSelfParameter: Equatable {
   /// 'self' is an instance parameter.
-  case instance(SwiftParameter)
+  case instance(convention: SwiftParameterConvention, swiftType: SwiftType)
 
   /// 'self' is a metatype for a static method. We only need the type to
   /// form the call.
@@ -67,6 +67,25 @@ enum SwiftSelfParameter: Equatable {
   /// 'self' is the type for a call to an initializer. We only need the type
   /// to form the call.
   case initializer(SwiftType)
+
+  var selfType: SwiftType {
+    get {
+      switch self {
+      case .instance(_, let swiftType), .staticMethod(let swiftType), .initializer(let swiftType):
+        return swiftType
+      }
+    }
+    set {
+      switch self {
+      case .instance(let convention, _):
+        self = .instance(convention: convention, swiftType: newValue)
+      case .staticMethod:
+        self = .staticMethod(newValue)
+      case .initializer:
+        self = .initializer(newValue)
+      }
+    }
+  }
 }
 
 extension SwiftFunctionSignature {
@@ -89,7 +108,13 @@ extension SwiftFunctionSignature {
       lookupContext: lookupContext
     )
 
-    let type = node.optionalMark != nil ? .optional(enclosingType) : enclosingType
+    let type: SwiftType =
+      if node.optionalMark != nil {
+        SwiftKnownTypes(symbolTable: lookupContext.symbolTable)
+          .optionalSugar(enclosingType)
+      } else {
+        enclosingType
+      }
 
     self.init(
       selfParameter: .initializer(enclosingType),
@@ -152,10 +177,8 @@ extension SwiftFunctionSignature {
         selfParameter = .staticMethod(enclosingType)
       } else {
         selfParameter = .instance(
-          SwiftParameter(
-            convention: isMutating ? .inout : isConsuming ? .consuming : .byValue,
-            type: enclosingType
-          )
+          convention: isMutating ? .inout : isConsuming ? .consuming : .byValue,
+          swiftType: enclosingType
         )
       }
     } else {
@@ -367,7 +390,7 @@ extension SwiftFunctionSignature {
     if decl.effectSpecifiers?.throwsClause != nil {
       effectSpecifiers.append(.throws)
     }
-    if let asyncSpecifier = decl.effectSpecifiers?.asyncSpecifier {
+    if decl.effectSpecifiers?.asyncSpecifier != nil {
       effectSpecifiers.append(.async)
     }
     return effectSpecifiers
@@ -405,10 +428,8 @@ extension SwiftFunctionSignature {
         return .staticMethod(enclosingType)
       } else {
         return .instance(
-          SwiftParameter(
-            convention: isSet && !enclosingType.isReferenceType ? .inout : .byValue,
-            type: enclosingType
-          )
+          convention: isSet && !enclosingType.isReferenceType ? .inout : .byValue,
+          swiftType: enclosingType
         )
       }
     } else {

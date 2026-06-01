@@ -12,6 +12,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+import CodePrinting
+import SwiftIfConfig
+import SwiftJavaConfigurationShared
+import SwiftParser
 import SwiftSyntax
 
 package protocol SwiftSymbolTableProtocol {
@@ -22,8 +26,14 @@ package protocol SwiftSymbolTableProtocol {
   /// return nominal types within this module.
   func lookupTopLevelNominalType(_ name: String) -> SwiftNominalTypeDeclaration?
 
+  /// Look for a top-level typealias with the given name.
+  func lookupTopLevelTypealias(_ name: String) -> SwiftTypeAliasDeclaration?
+
   // Look for a nested type with the given name.
   func lookupNestedType(_ name: String, parent: SwiftNominalTypeDeclaration) -> SwiftNominalTypeDeclaration?
+
+  // Look for a nested typealias with the given name.
+  func lookupNestedTypealias(_ name: String, parent: SwiftNominalTypeDeclaration) -> SwiftTypeAliasDeclaration?
 }
 
 extension SwiftSymbolTableProtocol {
@@ -35,6 +45,14 @@ extension SwiftSymbolTableProtocol {
 
     return lookupTopLevelNominalType(name)
   }
+
+  package func lookupTypealias(_ name: String, parent: SwiftNominalTypeDeclaration?) -> SwiftTypeAliasDeclaration? {
+    if let parent {
+      return lookupNestedTypealias(name, parent: parent)
+    }
+
+    return lookupTopLevelTypealias(name)
+  }
 }
 
 package class SwiftSymbolTable {
@@ -43,8 +61,14 @@ package class SwiftSymbolTable {
 
   private var knownTypeToNominal: [SwiftKnownTypeDeclKind: SwiftNominalTypeDeclaration] = [:]
   private var prioritySortedImportedModules: [SwiftModuleSymbolTable] {
-    importedModules.values.sorted(by: {
-      ($0.alternativeModules?.isMainSourceOfSymbols ?? false) && $0.moduleName < $1.moduleName
+    // Ordering with source of symbols preference:
+    // - main-source-of-symbols modules come first (alphabetical among themselves),
+    // - then the rest (alphabetical).
+    importedModules.values.sorted(by: { lhs, rhs in
+      let lhsIsMain = lhs.alternativeModules?.isMainSourceOfSymbols ?? false
+      let rhsIsMain = rhs.alternativeModules?.isMainSourceOfSymbols ?? false
+      if lhsIsMain != rhsIsMain { return lhsIsMain }
+      return lhs.moduleName < rhs.moduleName
     })
   }
 
@@ -52,13 +76,23 @@ package class SwiftSymbolTable {
     self.parsedModule = parsedModule
     self.importedModules = importedModules
   }
+
+  func isModuleName(_ name: String) -> Bool {
+    if name == moduleName {
+      return true
+    }
+    return importedModules.keys.contains(name)
+  }
 }
 
 extension SwiftSymbolTable {
   package static func setup(
     moduleName: String,
     _ inputFiles: some Collection<SwiftJavaInputFile>,
-    log: Logger
+    config: Configuration?,
+    sourceDependencies: SourceDependencies,
+    buildConfig: any BuildConfiguration = .jextractDefault,
+    log: Logger,
   ) -> SwiftSymbolTable {
 
     // Prepare imported modules.
@@ -82,16 +116,73 @@ extension SwiftSymbolTable {
       }
     }
 
+    for dependencyModuleName in sourceDependencies.swiftModuleNames {
+      // The module may already have been loaded as a known/built-in module
+      // (e.g. Swift, Foundation) above
+      guard importedModules[dependencyModuleName] == nil else {
+        continue
+      }
+      let dependencyInputs = sourceDependencies.swiftModuleInputs[dependencyModuleName] ?? []
+      // TODO: build a `dependencyImportedModules` dict by scanning the dep's
+      // own source files with `importingModules(sourceFile:)`, instead of
+      // reusing the primary's `importedModules`. The current set is too broad
+      // (it can shadow names) and too narrow (it misses modules the dep
+      // imports but the primary doesn't).
+      var dependencyModuleBuilder = SwiftParsedModuleSymbolTableBuilder(
+        moduleName: dependencyModuleName,
+        importedModules: importedModules,
+        buildConfig: buildConfig,
+      )
+      for input in dependencyInputs {
+        dependencyModuleBuilder.handle(sourceFile: input.syntax, sourceFilePath: input.path)
+      }
+      let dependencyModule = dependencyModuleBuilder.finalize()
+      importedModules[dependencyModuleName] = dependencyModule
+      log.info(
+        "Loaded dependency module '\(dependencyModuleName)' from \(dependencyInputs.count) source(s); "
+          + "top-level types [\(dependencyModule.topLevelTypes.count)]: \(dependencyModule.topLevelTypes.keys.sorted())"
+      )
+    }
+
+    // Load stub type declarations for imported modules from config.
+    // This enables types from external modules (e.g. extension targets) to be
+    // resolved in the symbol table without scanning their actual source.
+    if let stubs = config?.importedModuleStubs {
+      for (stubModuleName, declarations) in stubs {
+        if importedModules[stubModuleName] == nil {
+          let source = declarations.joined(separator: "\n")
+          let sourceFile = Parser.parse(source: source)
+          var stubBuilder = SwiftParsedModuleSymbolTableBuilder(
+            moduleName: stubModuleName,
+            importedModules: importedModules,
+            buildConfig: buildConfig,
+          )
+          stubBuilder.handle(sourceFile: sourceFile, sourceFilePath: "\(stubModuleName)_stub.swift")
+          let stubModule = stubBuilder.finalize()
+          importedModules[stubModuleName] = stubModule
+          log.info("Loaded module stub for '\(stubModuleName)' with \(declarations.count) declaration(s), top-level types: \(stubModule.topLevelTypes.keys.sorted())")
+        } else {
+          log.info("Module '\(stubModuleName)' already known, skipping stub")
+        }
+      }
+    } else {
+      log.debug("No importedModuleStubs in config")
+    }
+
     // FIXME: Support granular lookup context (file, type context).
 
     var builder = SwiftParsedModuleSymbolTableBuilder(
       moduleName: moduleName,
       importedModules: importedModules,
-      log: log
+      buildConfig: buildConfig,
+      log: log,
     )
     // First, register top-level and nested nominal types to the symbol table.
     for sourceFile in inputFiles {
       builder.handle(sourceFile: sourceFile.syntax, sourceFilePath: sourceFile.path)
+    }
+    if let stubs = sourceDependencies.syntheticJavaWrappersSwiftSource {
+      builder.handle(sourceFile: stubs.syntax, sourceFilePath: stubs.path)
     }
     let parsedModule = builder.finalize()
     return SwiftSymbolTable(parsedModule: parsedModule, importedModules: importedModules)
@@ -114,7 +205,28 @@ extension SwiftSymbolTable: SwiftSymbolTableProtocol {
       }
     }
 
-    // FIXME: Implement module qualified name lookups. E.g. 'Swift.String'
+    return nil
+  }
+
+  /// Look for a top-level nominal type in a specific module by name
+  package func lookupTopLevelNominalType(_ name: String, inModule moduleName: String) -> SwiftNominalTypeDeclaration? {
+    if moduleName == self.moduleName {
+      return parsedModule.lookupTopLevelNominalType(name)
+    }
+    return importedModules[moduleName]?.lookupTopLevelNominalType(name)
+  }
+
+  /// Look for a top-level typealias with the given name.
+  package func lookupTopLevelTypealias(_ name: String) -> SwiftTypeAliasDeclaration? {
+    if let parsedResult = parsedModule.lookupTopLevelTypealias(name) {
+      return parsedResult
+    }
+
+    for importedModule in prioritySortedImportedModules {
+      if let result = importedModule.lookupTopLevelTypealias(name) {
+        return result
+      }
+    }
 
     return nil
   }
@@ -127,6 +239,21 @@ extension SwiftSymbolTable: SwiftSymbolTableProtocol {
 
     for importedModule in importedModules.values {
       if let result = importedModule.lookupNestedType(name, parent: parent) {
+        return result
+      }
+    }
+
+    return nil
+  }
+
+  // Look for a nested typealias with the given name.
+  package func lookupNestedTypealias(_ name: String, parent: SwiftNominalTypeDeclaration) -> SwiftTypeAliasDeclaration? {
+    if let parsedResult = parsedModule.lookupNestedTypealias(name, parent: parent) {
+      return parsedResult
+    }
+
+    for importedModule in importedModules.values {
+      if let result = importedModule.lookupNestedTypealias(name, parent: parent) {
         return result
       }
     }
@@ -169,12 +296,13 @@ extension SwiftSymbolTable {
         continue
       }
 
-      // Try to print only on main module from relation chain as it has every other module.
-      guard
-        !mainSymbolSourceModules.isDisjoint(with: alternativeModules.moduleNames)
-          || alternativeModules.isMainSourceOfSymbols
-      else {
-        if !alternativeModules.isMainSourceOfSymbols {
+      // Only the main source of symbols emits the conditional import block.
+      // Secondary modules (e.g. FoundationEssentials when Foundation is the main source)
+      // are skipped when their main source is already present, because the main source's
+      // block already covers the import. If no main source is present, fall back to a
+      // plain import so the module is still imported.
+      guard alternativeModules.isMainSourceOfSymbols else {
+        if mainSymbolSourceModules.isDisjoint(with: alternativeModules.moduleNames) {
           printer.print("import \(module)")
         }
         continue

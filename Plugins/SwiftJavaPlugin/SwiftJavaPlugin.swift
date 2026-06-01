@@ -19,6 +19,10 @@ private let SwiftJavaConfigFileName = "swift-java.config"
 
 @main
 struct SwiftJavaBuildToolPlugin: SwiftJavaPluginProtocol, BuildToolPlugin {
+  struct DependencyConfigFile {
+    let swiftModuleName: String
+    let configURL: URL
+  }
 
   var pluginName: String = "swift-java"
   var verbose: Bool = getEnvironmentBool("SWIFT_JAVA_VERBOSE")
@@ -27,29 +31,29 @@ struct SwiftJavaBuildToolPlugin: SwiftJavaPluginProtocol, BuildToolPlugin {
     log("Create build commands for target '\(target.name)'")
     guard let sourceModule = target.sourceModule else { return [] }
 
-    let executable = try context.tool(named: "SwiftJavaTool").url
+    let executable = try context.tool(named: "swift-java").url
     var commands: [Command] = []
 
     // Note: Target doesn't have a directoryURL counterpart to directory,
     // so we cannot eliminate this deprecation warning.
-    let sourceDir = target.directory.string
+    let sourceDir = target.directoryURL
 
     // The name of the configuration file SwiftJava.config from the target for
     // which we are generating Swift wrappers for Java classes.
-    let configFile = URL(filePath: sourceDir)
+    let configFile =
+      sourceDir
       .appending(path: SwiftJavaConfigFileName)
     let config = try readConfiguration(sourceDir: sourceDir) ?? Configuration()
 
     log("Config on path: \(configFile.path(percentEncoded: false))")
     log("Config was: \(config)")
-    var javaDependencies = config.dependencies ?? []
 
     /// Find the manifest files from other swift-java executions in any targets
     /// this target depends on.
-    var dependentConfigFiles: [(String, URL)] = []
+    var dependencyConfigFiles: [DependencyConfigFile] = []
     func searchForConfigFiles(in target: any Target) {
       // log("Search for config files in target: \(target.name)")
-      let dependencyURL = URL(filePath: target.directory.string)
+      let dependencyURL = target.directoryURL
 
       // Look for a config file within this target.
       let dependencyConfigURL =
@@ -60,7 +64,9 @@ struct SwiftJavaBuildToolPlugin: SwiftJavaPluginProtocol, BuildToolPlugin {
         .path(percentEncoded: false)
 
       if FileManager.default.fileExists(atPath: dependencyConfigString) {
-        dependentConfigFiles.append((target.name, dependencyConfigURL))
+        dependencyConfigFiles.append(
+          DependencyConfigFile(swiftModuleName: target.name, configURL: dependencyConfigURL)
+        )
       }
     }
 
@@ -92,7 +98,7 @@ struct SwiftJavaBuildToolPlugin: SwiftJavaPluginProtocol, BuildToolPlugin {
     var arguments: [String] = []
     arguments += argumentsSwiftModule(sourceModule: sourceModule)
     arguments += argumentsOutputDirectory(context: context)
-    arguments += argumentsDependedOnConfigs(dependentConfigFiles)
+    arguments += dependsOnArguments(dependencyConfigFiles)
 
     let classes = config.classes ?? [:]
     print("[swift-java-plugin] Classes to wrap (\(classes.count)): \(classes.map(\.key))")
@@ -159,7 +165,7 @@ struct SwiftJavaBuildToolPlugin: SwiftJavaPluginProtocol, BuildToolPlugin {
           arguments: ["resolve"]
             + argumentsOutputDirectory(context: context, generated: false)
             + argumentsSwiftModule(sourceModule: sourceModule),
-          environment: [:],
+          environment: ProcessInfo.processInfo.environment,
           inputFiles: [configFile],
           outputFiles: fetchDependenciesOutputFiles
         )
@@ -186,6 +192,7 @@ struct SwiftJavaBuildToolPlugin: SwiftJavaPluginProtocol, BuildToolPlugin {
           executable: executable,
           arguments: ["wrap-java"]
             + arguments,
+          environment: ProcessInfo.processInfo.environment,
           inputFiles: compiledClassFiles + fetchDependenciesOutputFiles + [configFile],
           outputFiles: outputSwiftFiles
         )
@@ -223,13 +230,12 @@ extension SwiftJavaBuildToolPlugin {
     ]
   }
 
-  func argumentsDependedOnConfigs(_ dependentConfigFiles: [(String, URL)]) -> [String] {
-    dependentConfigFiles.flatMap { moduleAndConfigFile in
-      let (moduleName, configFile) = moduleAndConfigFile
-      return [
-        "--depends-on",
-        "\(moduleName)=\(configFile.path(percentEncoded: false))",
-      ]
+  func dependsOnArguments(_ dependencyConfigFiles: [DependencyConfigFile]) -> [String] {
+    dependencyConfigFiles.flatMap { dependencyConfigFile in
+      makeDependsOnArgument(
+        moduleName: dependencyConfigFile.swiftModuleName,
+        configPath: dependencyConfigFile.configURL.path(percentEncoded: false)
+      )
     }
   }
 
