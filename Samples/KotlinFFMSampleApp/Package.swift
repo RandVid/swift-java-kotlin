@@ -108,7 +108,6 @@ let package = Package(
       name: "SimpleSwiftLib",
       dependencies: [
         .product(name: "SwiftJava", package: "swift-java"),
-        .product(name: "CSwiftJavaJNI", package: "swift-java"),
         .product(name: "SwiftRuntimeFunctions", package: "swift-java"),
       ],
       exclude: [
@@ -116,7 +115,6 @@ let package = Package(
       ],
       swiftSettings: [
         .swiftLanguageMode(.v5),
-        .unsafeFlags(["-I\(javaIncludePath)", "-I\(javaPlatformIncludePath)"]),
       ],
       plugins: [
         .plugin(name: "JExtractSwiftPlugin", package: "swift-java")

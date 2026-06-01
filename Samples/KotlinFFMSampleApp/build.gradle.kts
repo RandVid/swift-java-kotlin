@@ -124,7 +124,7 @@ tasks.named<Test>("test") {
 }
 
 application {
-    mainClass = "com.example.kotlinffm.KotlinFFMDemo"
+    mainClass = "com.example.kotlinffm.KotlinFFMDemoKt"
 
     applicationDefaultJvmArgs = listOf(
         "--enable-native-access=ALL-UNNAMED",

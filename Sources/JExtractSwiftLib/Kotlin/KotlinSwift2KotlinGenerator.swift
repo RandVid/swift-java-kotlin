@@ -4,6 +4,7 @@
 //
 //  Created by Ilya Plisko on 16.02.26.
 //
+import CodePrinting
 import SwiftJavaConfigurationShared
 import SwiftSyntax
 import SwiftSyntaxBuilder
