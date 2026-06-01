@@ -29,6 +29,29 @@ primitive-only surface (Int/Int32/Bool/Double/Void).
 
 ---
 
+## Implementation status
+
+Phases 0–4 are **done and verified** (`./gradlew :Samples:KotlinNativeSampleApp:macosArm64Test` passes, executing real
+Swift through cinterop). Phase 5 (String / allocating returns) remains, deferred as below.
+
+Three findings during implementation changed the original plan:
+
+1. **The SwiftPM `<Module>-Swift.h` cannot be used by cinterop.** Its `swiftjava_*` thunks sit behind
+   `#if defined(__OBJC__)` and under `#pragma clang attribute push(external_source_symbol(language="Swift", ...))`,
+   so cinterop treats them as Swift (not C) declarations and emits no bindings (even with `language = Objective-C`,
+   which only pulls in Foundation noise). **Resolution:** the generator emits its own clean plain-C header
+   `<Module>.h` (via the otherwise-unused `--output-swift` dir); the `.def` binds against that in plain-C mode.
+2. **Two sibling Gradle projects applying the Kotlin plugin conflict** over the shared
+   `KotlinNativeBundleBuildService` (the JVM `KotlinFFMSampleApp` vs the new MPP sample). **Resolution:** a root
+   `build.gradle.kts` declaring `kotlin("jvm"/"multiplatform") apply false` + versions centralized in
+   `settings.gradle.kts` `pluginManagement.plugins {}`, loading the plugin in the shared root classloader scope.
+   The existing FFM sample is untouched and still builds.
+3. **`Bool` → `BOOL` → Kotlin `Boolean`** is confirmed (the open question from the original plan): with the clean-C
+   header declaring `_Bool`, cinterop binds it to `Boolean` and pass-through works — no conversion code needed.
+   String params/returns are skipped for now (Kotlin/Native needs explicit `memScoped` conversion — Phase 5).
+
+---
+
 ## Current-state findings (confirmed)
 
 - **Modes:** `Sources/SwiftJavaConfigurationShared/JExtract/JExtractGenerationMode.swift` — enum `ffm`/`jni`/`kotlin`, default `.ffm`.
