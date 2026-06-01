@@ -1,0 +1,9 @@
+# Swift Package Manager build output
+.build/
+
+# Gradle build output
+build/
+.gradle/
+
+# Generated cinterop definition (produced by the generateCinteropDef task)
+native/

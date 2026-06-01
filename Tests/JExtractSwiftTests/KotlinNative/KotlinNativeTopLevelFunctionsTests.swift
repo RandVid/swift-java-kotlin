@@ -149,20 +149,16 @@ struct KotlinNativeTopLevelFunctionsTests {
     )
   }
 
-  // MARK: - String
+  // MARK: - String is not supported yet on Kotlin/Native (needs memScoped)
 
   @Test
-  func string_asParameter() throws {
+  func string_asParameter_isSkipped() throws {
     try assertOutput(
       input: "public func printMessage(message: String) {}",
       .kotlinNative,
       .java,
       expectedChunks: [
-        """
-        fun printMessage(message: String): Unit {
-          swiftjava_SwiftModule_printMessage_message(message)
-        }
-        """
+        "// Skipped printMessage: String parameter not supported in kotlinNative mode"
       ]
     )
   }
@@ -170,11 +166,11 @@ struct KotlinNativeTopLevelFunctionsTests {
   @Test
   func string_asReturn_isSkipped() throws {
     try assertOutput(
-      input: "public func greet(name: String) -> String { name }",
+      input: "public func makeGreeting() -> String { \"hi\" }",
       .kotlinNative,
       .java,
       expectedChunks: [
-        "// Skipped greet: String return type not supported in FFM mode"
+        "// Skipped makeGreeting: String return type not supported in kotlinNative mode"
       ]
     )
   }

@@ -5,14 +5,19 @@
 //  Generates Kotlin/Native sources that call the Swift `@_cdecl` C thunks
 //  directly via cinterop, with no JVM / Java FFM layer in between.
 //
-//  The cinterop bindings are produced from the SwiftPM-generated
-//  `<Module>-Swift.h` header (which already declares every `swiftjava_*`
-//  thunk as a plain C function); this generator emits the Kotlin wrappers
-//  that import and call those thunks.
+//  This generator emits two artifacts:
+//   1. `<Module>.kt`  — Kotlin/Native wrappers that call the cinterop-bound
+//      thunk functions (imported via a wildcard import of the cinterop package).
+//   2. `<Module>.h`   — a plain-C header declaring the thunks, which the
+//      cinterop `.def` consumes. We emit our own clean header rather than the
+//      SwiftPM-generated `<Module>-Swift.h` because the latter wraps the
+//      thunks in `#pragma clang attribute push(external_source_symbol(
+//      language="Swift", ...))`, which makes cinterop treat them as Swift
+//      (not C) declarations and skip them.
 //
-//  Scope (matches the `kotlin` JVM mode): top-level functions with primitive
-//  types only (Int/Int32/Bool/Double/Void). String, async, members, and
-//  unsupported types are skipped with `// Skipped ...` comments.
+//  Scope (primitive-only, like the `kotlin` JVM mode minus String, which on
+//  Kotlin/Native needs explicit memScoped conversion — deferred):
+//  Int/Int32/Bool/Double/Void. Everything else is skipped with a comment.
 //
 import CodePrinting
 import SwiftJavaConfigurationShared
@@ -26,10 +31,16 @@ package class KotlinNativeSwift2KotlinGenerator {
   let swiftModuleName: String
   let kotlinPackage: String
   let kotlinOutputDirectory: String
+  let cinteropHeaderDirectory: String
 
   /// Reuse the same thunk-naming as the FFM generator so the Kotlin calls
   /// resolve to the exact C symbols exported by the Swift `@_cdecl` thunks.
   var thunkNames: ThunkNameRegistry
+
+  /// Plain-C prototypes for the thunks we emit wrappers for, collected while
+  /// printing the Kotlin file and re-used when writing the C header so the two
+  /// artifacts always stay in sync.
+  var cPrototypes: [String] = []
 
   /// Package that cinterop generates its bindings into (set via the `.def`
   /// `package =` line). Wrappers wildcard-import this package.
@@ -38,19 +49,26 @@ package class KotlinNativeSwift2KotlinGenerator {
   }
 
   package init(config: Configuration, translator: Swift2JavaTranslator,
-               kotlinPackage: String, kotlinOutputDirectory: String) {
+               kotlinPackage: String, kotlinOutputDirectory: String,
+               cinteropHeaderDirectory: String) {
     self.log = Logger(label: "kotlin-native-generator", logLevel: translator.log.logLevel)
     self.analysis = translator.result               // same IR as FFM / Kotlin-JVM generators
     self.swiftModuleName = translator.swiftModuleName
     self.kotlinPackage = kotlinPackage
     self.kotlinOutputDirectory = kotlinOutputDirectory
+    self.cinteropHeaderDirectory = cinteropHeaderDirectory
     self.thunkNames = ThunkNameRegistry()
   }
 
   func generate() throws {
     var printer = CodePrinter()
     try writeExportedKotlinSources(printer: &printer)
+
+    var headerPrinter = CodePrinter()
+    try writeCinteropHeader(printer: &headerPrinter)
   }
+
+  // MARK: - Kotlin sources
 
   package func writeExportedKotlinSources(printer: inout CodePrinter) throws {
     let filename = "\(swiftModuleName).kt"
@@ -92,25 +110,35 @@ package class KotlinNativeSwift2KotlinGenerator {
 
     // Render parameters (primitive-only).
     var renderedParams: [String] = []
+    var cParamTypes: [String] = []
+    var argNames: [String] = []
     renderedParams.reserveCapacity(decl.functionSignature.parameters.count)
 
     for (i, p) in decl.functionSignature.parameters.enumerated() {
-      guard let ktTy = swiftTypeToKotlin(p.type) else {
+      if swiftTypeToKotlin(p.type) == "String" {
+        printer.print("// Skipped \(decl.displayName): String parameter not supported in kotlinNative mode")
+        return
+      }
+      guard let cTy = swiftTypeToC(p.type), let ktTy = swiftTypeToKotlin(p.type) else {
         printer.print("// Skipped \(decl.displayName): unsupported param type '\(p.type)'")
         return
       }
-      renderedParams.append("\(parameterName(p, at: i)): \(ktTy)")
+      let name = parameterName(p, at: i)
+      renderedParams.append("\(name): \(ktTy)")
+      cParamTypes.append(cTy)
+      argNames.append(name)
     }
 
     // Return type (primitive-only).
-    guard let ktReturn = swiftTypeToKotlin(decl.functionSignature.result.type) else {
-      printer.print("// Skipped \(decl.displayName): unsupported return type '\(decl.functionSignature.result.type)'")
+    if swiftTypeToKotlin(decl.functionSignature.result.type) == "String" {
+      printer.print("// Skipped \(decl.displayName): String return type not supported in kotlinNative mode")
       return
     }
-
-    // String returns are not supported by the FFM thunks yet, so skip them here too.
-    if ktReturn == "String" {
-      printer.print("// Skipped \(decl.displayName): String return type not supported in FFM mode")
+    guard
+      let cReturn = swiftTypeToC(decl.functionSignature.result.type),
+      let ktReturn = swiftTypeToKotlin(decl.functionSignature.result.type)
+    else {
+      printer.print("// Skipped \(decl.displayName): unsupported return type '\(decl.functionSignature.result.type)'")
       return
     }
 
@@ -119,24 +147,46 @@ package class KotlinNativeSwift2KotlinGenerator {
 
     // The C symbol exported by the Swift @_cdecl thunk for this function.
     let thunkName = thunkNames.functionThunkName(decl: decl)
-
-    // Argument names passed through to the cinterop function (type-compatible:
-    // Long<->NSInteger, Int<->int, Double<->double, Boolean<->BOOL).
-    let argNames = decl.functionSignature.parameters.enumerated()
-      .map { (i, p) in parameterName(p, at: i) }
-      .joined(separator: ", ")
+    let argsString = argNames.joined(separator: ", ")
 
     printer.print("fun \(decl.name)(\(paramsString)): \(ktReturn) {\(throwsComment)")
     if ktReturn == "Unit" {
-      printer.print("  \(thunkName)(\(argNames))")
+      printer.print("  \(thunkName)(\(argsString))")
     } else {
-      printer.print("  return \(thunkName)(\(argNames))")
+      printer.print("  return \(thunkName)(\(argsString))")
     }
     printer.print("}")
+
+    // Record the matching plain-C prototype for the cinterop header.
+    let cParams = cParamTypes.isEmpty ? "void" : cParamTypes.joined(separator: ", ")
+    cPrototypes.append("\(cReturn) \(thunkName)(\(cParams));")
   }
 
+  // MARK: - cinterop C header
+
+  func writeCinteropHeader(printer: inout CodePrinter) throws {
+    let guardName = "\(swiftModuleName.uppercased())_CINTEROP_H"
+    printer.print("// Generated by jextract-swift (kotlinNative mode)")
+    printer.print("// Plain-C declarations of the Swift @_cdecl thunks for Kotlin/Native cinterop.")
+    printer.print("#ifndef \(guardName)")
+    printer.print("#define \(guardName)")
+    printer.print("")
+    for proto in cPrototypes {
+      printer.print(proto)
+    }
+    printer.print("")
+    printer.print("#endif")
+
+    _ = try printer.writeContents(
+      outputDirectory: cinteropHeaderDirectory,
+      javaPackagePath: "",
+      filename: "\(swiftModuleName).h"
+    )
+  }
+
+  // MARK: - Type mapping
+
   /// Map a Swift known type to its Kotlin equivalent, or `nil` if unsupported.
-  /// Mirrors the `kotlin` JVM mode so the two backends stay in lockstep.
   func swiftTypeToKotlin(_ t: SwiftType) -> String? {
     if let known = t.asNominalTypeDeclaration?.knownTypeKind {
       switch known {
@@ -150,7 +200,6 @@ package class KotlinNativeSwift2KotlinGenerator {
       }
     }
 
-    // Fallback to textual matching (covers cases where knownTypeKind is absent).
     switch String(describing: t) {
     case "Int", "Swift.Int": return "Long"
     case "Int32", "Swift.Int32": return "Int"
@@ -158,6 +207,32 @@ package class KotlinNativeSwift2KotlinGenerator {
     case "Double", "Swift.Double": return "Double"
     case "String", "Swift.String": return "String"
     case "Void", "Swift.Void", "()": return "Unit"
+    default: return nil
+    }
+  }
+
+  /// Map a Swift known type to the C type used in the cinterop header, matching
+  /// the C ABI of the FFM `@_cdecl` thunks (Swift Int -> NSInteger -> `long`,
+  /// Int32 -> `int`, Bool -> `BOOL`/`_Bool`, Double -> `double`). Returns `nil`
+  /// for anything not yet supported (including String).
+  func swiftTypeToC(_ t: SwiftType) -> String? {
+    if let known = t.asNominalTypeDeclaration?.knownTypeKind {
+      switch known {
+      case .int: return "long"
+      case .int32: return "int"
+      case .bool: return "_Bool"
+      case .double: return "double"
+      case .void: return "void"
+      default: break
+      }
+    }
+
+    switch String(describing: t) {
+    case "Int", "Swift.Int": return "long"
+    case "Int32", "Swift.Int32": return "int"
+    case "Bool", "Swift.Bool": return "_Bool"
+    case "Double", "Swift.Double": return "double"
+    case "Void", "Swift.Void", "()": return "void"
     default: return nil
     }
   }

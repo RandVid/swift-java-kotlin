@@ -160,7 +160,10 @@ public struct SwiftToJava {
         config: self.config,
         translator: translator,
         kotlinPackage: config.javaPackage ?? "",
-        kotlinOutputDirectory: outputJavaDirectory
+        kotlinOutputDirectory: outputJavaDirectory,
+        // Reuse --output-swift (unused for thunks in this mode) to hold the
+        // plain-C header that Kotlin/Native cinterop consumes.
+        cinteropHeaderDirectory: outputSwiftDirectory
       )
 
       try generator.generate()

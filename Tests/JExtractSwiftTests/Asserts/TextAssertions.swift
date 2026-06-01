@@ -126,7 +126,8 @@ func assertOutput(
         config: config,
         translator: translator,
         kotlinPackage: "com.example.swift",
-        kotlinOutputDirectory: "/fake"
+        kotlinOutputDirectory: "/fake",
+        cinteropHeaderDirectory: "/fake"
       )
       try generator.writeExportedKotlinSources(printer: &printer)
     case .swift:
