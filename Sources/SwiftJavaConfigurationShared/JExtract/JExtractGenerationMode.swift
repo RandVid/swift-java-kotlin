@@ -19,8 +19,12 @@ public enum JExtractGenerationMode: String, Sendable, Codable {
 
   /// Java Native Interface
   case jni
-  
+
+  /// Kotlin source delegating to generated Java FFM bindings (JVM target)
   case kotlin
+
+  /// Kotlin/Native source calling the Swift `@_cdecl` C thunks directly via cinterop (no JVM)
+  case kotlinNative
 
   public static var `default`: JExtractGenerationMode {
     .ffm

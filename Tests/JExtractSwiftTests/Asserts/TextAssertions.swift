@@ -118,6 +118,27 @@ func assertOutput(
       )
       try generator.writeSwiftThunkSources(printer: &printer)
     }
+
+  case .kotlinNative:
+    switch renderKind {
+    case .java:
+      let generator = KotlinNativeSwift2KotlinGenerator(
+        config: config,
+        translator: translator,
+        kotlinPackage: "com.example.swift",
+        kotlinOutputDirectory: "/fake"
+      )
+      try generator.writeExportedKotlinSources(printer: &printer)
+    case .swift:
+      let generator = FFMSwift2JavaGenerator(
+        config: config,
+        translator: translator,
+        javaPackage: "com.example.swift",
+        swiftOutputDirectory: "/fake",
+        javaOutputDirectory: "/fake"
+      )
+      try generator.writeSwiftThunkSources(printer: &printer)
+    }
   }
   output = printer.finalize()
 
