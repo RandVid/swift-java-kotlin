@@ -50,6 +50,33 @@ Three findings during implementation changed the original plan:
    header declaring `_Bool`, cinterop binds it to `Boolean` and pass-through works — no conversion code needed.
    String params/returns are skipped for now (Kotlin/Native needs explicit `memScoped` conversion — Phase 5).
 
+### Design decision: the cinterop C header (must generate; should reuse FFM's C lowering)
+
+A recurring question is whether `kotlinNative` can avoid generating its own C header by reusing existing output.
+There are two distinct "reuses", with opposite answers:
+
+- **Reuse the Swift-compiler-emitted `<Module>-Swift.h` → not possible.** That header (produced by `swift build`'s
+  `-emit-clang-header`, *not* by jextract) marks every thunk with
+  `#pragma clang attribute push(external_source_symbol(language="Swift", …))`, so cinterop classifies them as Swift
+  declarations and emits zero bindings. There is no cinterop flag to override this filter and no Swift flag to
+  suppress the attribute. The only workaround is to `sed` the pragma/`#if defined(__OBJC__)` guards out of the header
+  at build time — fragile (coupled to the compiler's exact header format, version-dependent) and strictly worse than
+  emitting clean declarations from the IR. **Do not pursue.**
+
+- **Reuse FFM/JNI's C-ABI lowering machinery → yes, and we should.** FFM already lowers every thunk to a `CFunction`
+  (`Sources/JExtractSwiftLib/CTypes/` + `FFM/CDeclLowering/CRepresentation.swift`), whose `.description` prints a
+  complete C declaration (`long swiftjava_…(long, long);`) for *all* cdecl types — pointers, optional-pointers,
+  indirect struct returns, self-pointers — not just primitives. This is the same lowering that produces FFM's Java
+  `FunctionDescriptor`, i.e. the single source of truth for the C ABI.
+
+**Conclusion:** generating a clean plain-C header is **unavoidable** (cinterop cannot consume the Swift one). The open
+choice is only *what derives the C types*. The current generator uses a bespoke `swiftTypeToC` covering the 5
+primitives; it matches FFM exactly today, so primitive output is correct, but it duplicates ABI knowledge. **Planned
+improvement:** replace `swiftTypeToC` (and the hand-built prototype string) with FFM's cdecl→`CFunction` lowering and
+emit `cFunction.description`. This keeps one C-ABI source of truth across FFM/JNI/kotlinNative and is a **prerequisite
+for non-primitive support** (Phase 5), where the cdecl thunk signature is not a 1:1 type map (it adds out-pointers for
+indirect returns and self-pointers) and hand-rolling would produce wrong signatures.
+
 ---
 
 ## Current-state findings (confirmed)
