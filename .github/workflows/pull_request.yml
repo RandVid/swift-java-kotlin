@@ -273,6 +273,7 @@ jobs:
           'SwiftAndJavaJarFFMSampleLib',
           'SwiftJavaExtractFFMSampleApp',
           'SwiftJavaExtractJNISampleApp',
+          'KotlinNativeSampleApp',  # macOS-only: Kotlin/Native macosArm64 + cinterop
         ]
     steps:
       - uses: actions/checkout@v6
