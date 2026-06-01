@@ -5,8 +5,14 @@
 //  Generates Kotlin/Native sources that call the Swift `@_cdecl` C thunks
 //  directly via cinterop, with no JVM / Java FFM layer in between.
 //
-//  Phase 0: skeleton only. Emits an empty `<Module>.kt` (package header).
-//  Phase 1 will add primitive-only top-level function generation.
+//  The cinterop bindings are produced from the SwiftPM-generated
+//  `<Module>-Swift.h` header (which already declares every `swiftjava_*`
+//  thunk as a plain C function); this generator emits the Kotlin wrappers
+//  that import and call those thunks.
+//
+//  Scope (matches the `kotlin` JVM mode): top-level functions with primitive
+//  types only (Int/Int32/Bool/Double/Void). String, async, members, and
+//  unsupported types are skipped with `// Skipped ...` comments.
 //
 import CodePrinting
 import SwiftJavaConfigurationShared
@@ -21,6 +27,16 @@ package class KotlinNativeSwift2KotlinGenerator {
   let kotlinPackage: String
   let kotlinOutputDirectory: String
 
+  /// Reuse the same thunk-naming as the FFM generator so the Kotlin calls
+  /// resolve to the exact C symbols exported by the Swift `@_cdecl` thunks.
+  var thunkNames: ThunkNameRegistry
+
+  /// Package that cinterop generates its bindings into (set via the `.def`
+  /// `package =` line). Wrappers wildcard-import this package.
+  var cinteropPackage: String {
+    kotlinPackage.isEmpty ? "cinterop" : "\(kotlinPackage).cinterop"
+  }
+
   package init(config: Configuration, translator: Swift2JavaTranslator,
                kotlinPackage: String, kotlinOutputDirectory: String) {
     self.log = Logger(label: "kotlin-native-generator", logLevel: translator.log.logLevel)
@@ -28,6 +44,7 @@ package class KotlinNativeSwift2KotlinGenerator {
     self.swiftModuleName = translator.swiftModuleName
     self.kotlinPackage = kotlinPackage
     self.kotlinOutputDirectory = kotlinOutputDirectory
+    self.thunkNames = ThunkNameRegistry()
   }
 
   func generate() throws {
@@ -50,7 +67,112 @@ package class KotlinNativeSwift2KotlinGenerator {
     printer.print("// Swift module: \(swiftModuleName)")
     printer.print("// Calls Swift @_cdecl C thunks directly via Kotlin/Native cinterop\n")
     printer.print("package \(kotlinPackage)\n")
+    printer.print("import \(cinteropPackage).*\n")
 
-    // Phase 1: emit top-level functions here.
+    for decl in analysis.importedGlobalFuncs {
+      printTopLevelKotlinFunction(&printer, decl)
+      printer.print("")
+    }
+  }
+
+  func printTopLevelKotlinFunction(_ printer: inout CodePrinter, _ decl: ImportedFunc) {
+    // Only top-level functions: skip members/initializers/accessors/etc.
+    guard decl.apiKind == .function else {
+      printer.print("// Skipped \(decl.displayName): apiKind=\(decl.apiKind)")
+      return
+    }
+    guard decl.hasParent == false else {
+      printer.print("// Skipped \(decl.displayName): not a top-level function (has parent)")
+      return
+    }
+    guard decl.isAsync == false else {
+      printer.print("// Skipped \(decl.displayName): async not supported in kotlinNative mode")
+      return
+    }
+
+    // Render parameters (primitive-only).
+    var renderedParams: [String] = []
+    renderedParams.reserveCapacity(decl.functionSignature.parameters.count)
+
+    for (i, p) in decl.functionSignature.parameters.enumerated() {
+      guard let ktTy = swiftTypeToKotlin(p.type) else {
+        printer.print("// Skipped \(decl.displayName): unsupported param type '\(p.type)'")
+        return
+      }
+      renderedParams.append("\(parameterName(p, at: i)): \(ktTy)")
+    }
+
+    // Return type (primitive-only).
+    guard let ktReturn = swiftTypeToKotlin(decl.functionSignature.result.type) else {
+      printer.print("// Skipped \(decl.displayName): unsupported return type '\(decl.functionSignature.result.type)'")
+      return
+    }
+
+    // String returns are not supported by the FFM thunks yet, so skip them here too.
+    if ktReturn == "String" {
+      printer.print("// Skipped \(decl.displayName): String return type not supported in FFM mode")
+      return
+    }
+
+    let paramsString = renderedParams.joined(separator: ", ")
+    let throwsComment = decl.isThrowing ? " // throws" : ""
+
+    // The C symbol exported by the Swift @_cdecl thunk for this function.
+    let thunkName = thunkNames.functionThunkName(decl: decl)
+
+    // Argument names passed through to the cinterop function (type-compatible:
+    // Long<->NSInteger, Int<->int, Double<->double, Boolean<->BOOL).
+    let argNames = decl.functionSignature.parameters.enumerated()
+      .map { (i, p) in parameterName(p, at: i) }
+      .joined(separator: ", ")
+
+    printer.print("fun \(decl.name)(\(paramsString)): \(ktReturn) {\(throwsComment)")
+    if ktReturn == "Unit" {
+      printer.print("  \(thunkName)(\(argNames))")
+    } else {
+      printer.print("  return \(thunkName)(\(argNames))")
+    }
+    printer.print("}")
+  }
+
+  /// Map a Swift known type to its Kotlin equivalent, or `nil` if unsupported.
+  /// Mirrors the `kotlin` JVM mode so the two backends stay in lockstep.
+  func swiftTypeToKotlin(_ t: SwiftType) -> String? {
+    if let known = t.asNominalTypeDeclaration?.knownTypeKind {
+      switch known {
+      case .int: return "Long"
+      case .int32: return "Int"
+      case .bool: return "Boolean"
+      case .double: return "Double"
+      case .string: return "String"
+      case .void: return "Unit"
+      default: break
+      }
+    }
+
+    // Fallback to textual matching (covers cases where knownTypeKind is absent).
+    switch String(describing: t) {
+    case "Int", "Swift.Int": return "Long"
+    case "Int32", "Swift.Int32": return "Int"
+    case "Bool", "Swift.Bool": return "Boolean"
+    case "Double", "Swift.Double": return "Double"
+    case "String", "Swift.String": return "String"
+    case "Void", "Swift.Void", "()": return "Unit"
+    default: return nil
+    }
+  }
+
+  /// Resolve a Kotlin-safe parameter name: use the Swift parameter name,
+  /// synthesize `p0`/`p1`/... when absent, and backtick-escape keywords.
+  func parameterName(_ p: SwiftParameter, at index: Int) -> String {
+    var name = (p.parameterName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
+    if name.isEmpty || name == "_" {
+      name = "p\(index)"
+    }
+    let kotlinKeywords: Set<String> = [
+      "object", "class", "fun", "val", "var", "when", "is", "in",
+      "as", "try", "catch", "finally", "null", "true", "false",
+    ]
+    return kotlinKeywords.contains(name) ? "`\(name)`" : name
   }
 }
