@@ -28,9 +28,10 @@ JVM and delegates through generated Java FFM classes
 
 ## Scope
 
-Primitive top-level functions only: `Int`/`Int32`/`Bool`/`Double`/`Void`.
-`String` and other types are skipped for now (Kotlin/Native String marshalling
-needs explicit `memScoped` conversion — see `MIGRATION.md`).
+Top-level functions over `Int`/`Int32`/`Bool`/`Double`/`Void`, plus `String`
+**parameters** (marshalled as a null-terminated UTF-8 C string via `String.cstr`).
+`String` **returns** and other types are still skipped (a String return hands
+back a heap pointer the caller must free — see `MIGRATION.md`).
 
 ## Requirements
 

@@ -149,20 +149,58 @@ struct KotlinNativeTopLevelFunctionsTests {
     )
   }
 
-  // MARK: - String is not supported yet on Kotlin/Native (needs memScoped)
+  // MARK: - String parameters (passed as null-terminated UTF-8 via .cstr)
 
   @Test
-  func string_asParameter_isSkipped() throws {
+  func string_asParameter() throws {
     try assertOutput(
       input: "public func printMessage(message: String) {}",
       .kotlinNative,
       .java,
       expectedChunks: [
-        "// Skipped printMessage: String parameter not supported in kotlinNative mode"
+        """
+        fun printMessage(message: String): Unit {
+          swiftjava_SwiftModule_printMessage_message(message.cstr)
+        }
+        """
       ]
     )
   }
 
+  @Test
+  func string_parameterWithPrimitiveReturn() throws {
+    try assertOutput(
+      input: "public func countChars(s: String) -> Int32 { 0 }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun countChars(s: String): Int {
+          return swiftjava_SwiftModule_countChars_s(s.cstr)
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func string_mixedWithPrimitiveParameters() throws {
+    try assertOutput(
+      input: "public func tag(label: String, value: Int) {}",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun tag(label: String, value: Long): Unit {
+          swiftjava_SwiftModule_tag_label_value(label.cstr, value)
+        }
+        """
+      ]
+    )
+  }
+
+  // String *returns* are still unsupported (the thunk returns a heap pointer
+  // the caller must free).
   @Test
   func string_asReturn_isSkipped() throws {
     try assertOutput(
