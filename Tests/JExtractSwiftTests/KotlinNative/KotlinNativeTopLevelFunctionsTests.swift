@@ -97,6 +97,38 @@ struct KotlinNativeTopLevelFunctionsTests {
     )
   }
 
+  @Test
+  func int32_asReturn() throws {
+    try assertOutput(
+      input: "public func returnInt32() -> Int32 { 42 }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun returnInt32(): Int {
+          return swiftjava_SwiftModule_returnInt32()
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func intMixed_int32AndInt() throws {
+    try assertOutput(
+      input: "public func addMixed(a: Int32, b: Int) -> Int32 { a + Int32(b) }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun addMixed(a: Int, b: Long): Int {
+          return swiftjava_SwiftModule_addMixed_a_b(a, b)
+        }
+        """
+      ]
+    )
+  }
+
   // MARK: - Bool
 
   @Test
@@ -199,6 +231,22 @@ struct KotlinNativeTopLevelFunctionsTests {
     )
   }
 
+  @Test
+  func string_multipleStringParameters() throws {
+    try assertOutput(
+      input: "public func log(prefix: String, message: String) {}",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun log(prefix: String, message: String): Unit {
+          swiftjava_SwiftModule_log_prefix_message(prefix.cstr, message.cstr)
+        }
+        """
+      ]
+    )
+  }
+
   // String *returns* are still unsupported (the thunk returns a heap pointer
   // the caller must free).
   @Test
@@ -258,7 +306,7 @@ struct KotlinNativeTopLevelFunctionsTests {
       .kotlinNative,
       .java,
       expectedChunks: [
-        "// Skipped sum: unsupported param type"
+        "// Skipped sum: unsupported param type '[Int]'"
       ]
     )
   }
