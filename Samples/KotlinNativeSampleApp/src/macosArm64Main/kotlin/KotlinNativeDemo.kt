@@ -39,5 +39,8 @@ fun main() {
     val quotient = divide(100.0, 4.0)
     println("   divide(100.0, 4.0) = $quotient")
 
+    println("\n5. Calling void function with String parameter:")
+    printMessage("   This message is printed from Swift!")
+
     println("\n=== All Kotlin/Native -> Swift cinterop calls successful! ===")
 }

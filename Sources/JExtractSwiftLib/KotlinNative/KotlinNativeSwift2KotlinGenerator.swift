@@ -19,9 +19,10 @@
 //  `resolvedFunctions()`), so they always agree on which functions are emitted
 //  and on the thunk symbol names.
 //
-//  Scope (primitive-only, like the `kotlin` JVM mode minus String, which on
-//  Kotlin/Native needs explicit memScoped conversion — deferred):
-//  Int/Int32/Bool/Double/Void. Everything else is skipped with a comment.
+//  Scope: Int/Int32/Bool/Double/Void, plus String *parameters* (passed as a
+//  null-terminated UTF-8 C string via `String.cstr`, matching the thunk's
+//  `String(cString:)`). String *returns* are still skipped (the thunk returns a
+//  heap pointer the caller must free). Everything else is skipped with a comment.
 //
 import CodePrinting
 import SwiftJavaConfigurationShared
@@ -36,6 +37,10 @@ package class KotlinNativeSwift2KotlinGenerator {
   let kotlinPackage: String
   let kotlinOutputDirectory: String
   let cinteropHeaderDirectory: String
+
+  /// Symbol table used to lower Swift signatures to their `@_cdecl` C form
+  /// (e.g. `String` parameter -> `UnsafePointer<Int8>`).
+  let symbolTable: SwiftSymbolTable
 
   /// Reuse the same thunk-naming as the FFM generator so the Kotlin calls
   /// resolve to the exact C symbols exported by the Swift `@_cdecl` thunks.
@@ -52,8 +57,12 @@ package class KotlinNativeSwift2KotlinGenerator {
     let thunkName: String        // e.g. "swiftjava_SimpleSwiftLib_add_a_b"
     let kotlinParams: [String]   // e.g. ["a: Long", "b: Long"]
     let kotlinReturn: String     // e.g. "Long"
-    let argNames: [String]       // e.g. ["a", "b"] (Kotlin call arguments)
+    /// Arguments passed to the thunk, with per-parameter conversion applied
+    /// (primitives pass through; `String` becomes `name.cstr`).
+    let callArgs: [String]       // e.g. ["a", "b"] or ["message.cstr"]
     let isThrowing: Bool
+    /// True if any argument needs a `kotlinx.cinterop` conversion (e.g. `.cstr`).
+    let usesCInterop: Bool
     /// The thunk's C declaration, lowered via the shared FFM CType/CFunction
     /// machinery — the same lowering that produces FFM's Java FunctionDescriptor,
     /// so the C ABI has a single source of truth across modes.
@@ -82,6 +91,7 @@ package class KotlinNativeSwift2KotlinGenerator {
     self.kotlinPackage = kotlinPackage
     self.kotlinOutputDirectory = kotlinOutputDirectory
     self.cinteropHeaderDirectory = cinteropHeaderDirectory
+    self.symbolTable = translator.symbolTable
     self.thunkNames = ThunkNameRegistry()
   }
 
@@ -115,24 +125,30 @@ package class KotlinNativeSwift2KotlinGenerator {
     guard decl.hasParent == false else { return skip("not a top-level function (has parent)") }
     guard decl.isAsync == false else { return skip("async not supported in kotlinNative mode") }
 
-    // Kotlin-side scope gate: defines what kotlinNative supports today
-    // (Int/Int32/Bool/Double/Void). String is deferred (needs memScoped
-    // conversion); everything else is unsupported.
+    // Kotlin-side scope gate. Supported parameter types: Int/Int32/Bool/Double
+    // and String (passed as a null-terminated UTF-8 C string via `.cstr`).
     var kotlinParams: [String] = []
-    var argNames: [String] = []
+    var callArgs: [String] = []
+    var usesCInterop = false
     for (i, p) in decl.functionSignature.parameters.enumerated() {
-      let ktTy = swiftTypeToKotlin(p.type)
-      if ktTy == "String" {
-        return skip("String parameter not supported in kotlinNative mode")
-      }
-      guard let ktTy else {
+      guard let ktTy = swiftTypeToKotlin(p.type) else {
         return skip("unsupported param type '\(p.type)'")
       }
       let name = parameterName(p, at: i)
       kotlinParams.append("\(name): \(ktTy)")
-      argNames.append(name)
+      if ktTy == "String" {
+        // The thunk takes `UnsafePointer<Int8>` and does `String(cString:)`;
+        // `.cstr` yields a null-terminated UTF-8 buffer that cinterop pins for
+        // the duration of the call.
+        callArgs.append("\(name).cstr")
+        usesCInterop = true
+      } else {
+        callArgs.append(name)
+      }
     }
 
+    // Return type. String returns are still unsupported (the thunk hands back a
+    // heap pointer the caller must free — deferred).
     let ktReturnType = swiftTypeToKotlin(decl.functionSignature.result.type)
     if ktReturnType == "String" {
       return skip("String return type not supported in kotlinNative mode")
@@ -141,16 +157,17 @@ package class KotlinNativeSwift2KotlinGenerator {
       return skip("unsupported return type '\(decl.functionSignature.result.type)'")
     }
 
-    // C-side: reuse the shared FFM cdecl -> CType/CFunction lowering for the
-    // thunk's C declaration. This is the single source of truth for the C ABI
-    // (the same lowering FFM uses for its FunctionDescriptor) and is correct for
-    // every type FFM supports, not just primitives. For the primitive scope
-    // gated above the raw signature is already cdecl-valid, so this does not
-    // throw; the catch defends against the scope widening (e.g. Phase 5).
+    // C-side: lower the Swift signature to its `@_cdecl` form via the shared FFM
+    // lowering (e.g. `String` -> `UnsafePointer<Int8>`), then render the C
+    // declaration from that. This is the single source of truth for the C ABI
+    // (the same lowering FFM uses for its FunctionDescriptor). A lowering failure
+    // means the type isn't C-representable -> skip.
     let thunkName = thunkNames.functionThunkName(decl: decl)
     let cFunction: CFunction
     do {
-      cFunction = try CFunction(cdeclSignature: decl.functionSignature, cName: thunkName)
+      let lowered = try CdeclLowering(symbolTable: symbolTable)
+        .lowerFunctionSignature(decl.functionSignature)
+      cFunction = try CFunction(cdeclSignature: lowered.cdeclSignature, cName: thunkName)
     } catch {
       return skip("unsupported C lowering: \(error)")
     }
@@ -160,8 +177,9 @@ package class KotlinNativeSwift2KotlinGenerator {
       thunkName: thunkName,
       kotlinParams: kotlinParams,
       kotlinReturn: ktReturn,
-      argNames: argNames,
+      callArgs: callArgs,
       isThrowing: decl.isThrowing,
+      usesCInterop: usesCInterop,
       cFunction: cFunction
     ))
   }
@@ -183,7 +201,17 @@ package class KotlinNativeSwift2KotlinGenerator {
     printer.print("// Swift module: \(swiftModuleName)")
     printer.print("// Calls Swift @_cdecl C thunks directly via Kotlin/Native cinterop\n")
     printer.print("package \(kotlinPackage)\n")
-    printer.print("import \(cinteropPackage).*\n")
+    printer.print("import \(cinteropPackage).*")
+
+    // `.cstr` (and other interop conversions) live in kotlinx.cinterop.
+    let needsCInterop = resolvedFunctions().contains {
+      if case .emit(let fn) = $0 { return fn.usesCInterop }
+      return false
+    }
+    if needsCInterop {
+      printer.print("import kotlinx.cinterop.cstr")
+    }
+    printer.print("")
 
     for resolved in resolvedFunctions() {
       switch resolved {
@@ -199,7 +227,7 @@ package class KotlinNativeSwift2KotlinGenerator {
   func printKotlinFunction(_ printer: inout CodePrinter, _ fn: NativeFunc) {
     let paramsString = fn.kotlinParams.joined(separator: ", ")
     let throwsComment = fn.isThrowing ? " // throws" : ""
-    let argsString = fn.argNames.joined(separator: ", ")
+    let argsString = fn.callArgs.joined(separator: ", ")
 
     printer.print("fun \(fn.kotlinName)(\(paramsString)): \(fn.kotlinReturn) {\(throwsComment)")
     if fn.kotlinReturn == "Unit" {

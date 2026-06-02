@@ -48,7 +48,12 @@ Three findings during implementation changed the original plan:
    The existing FFM sample is untouched and still builds.
 3. **`Bool` → `BOOL` → Kotlin `Boolean`** is confirmed (the open question from the original plan): with the clean-C
    header declaring `_Bool`, cinterop binds it to `Boolean` and pass-through works — no conversion code needed.
-   String params/returns are skipped for now (Kotlin/Native needs explicit `memScoped` conversion — Phase 5).
+
+**String parameters are now supported** (returns still deferred). The C declaration comes from FFM's `CdeclLowering`
+(`String` → `UnsafePointer<Int8>` → `const int8_t *`); the Kotlin wrapper passes `name.cstr` (a null-terminated UTF-8
+buffer cinterop pins for the call), matching the thunk's `String(cString:)`. A `String` *return* is still skipped
+because the thunk hands back a heap `int8_t *` from `_swiftjava_stringToCString(...)` that the caller must free — that
+needs a `toKString()` + free step (next).
 
 ### Design decision: the cinterop C header (must generate; should reuse FFM's C lowering)
 
