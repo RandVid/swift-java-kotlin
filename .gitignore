@@ -51,3 +51,7 @@ Package.resolved
 
 
 BuildLogic/.kotlin/
+.kotlin/
+
+CLAUDE.md
+*.pdf
