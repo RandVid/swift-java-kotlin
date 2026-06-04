@@ -20,9 +20,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 // Integration test: Kotlin/Native -> cinterop -> Swift @_cdecl thunk -> real Swift.
-// The generated wrappers (add/isPositive/divide/helloWorld/printMessage) live in
-// this same package, so they are callable without an import. (greet returns
-// String, which is not yet supported in kotlinNative mode.)
+// The generated wrappers live in this same package, so they are callable without
+// an explicit import.
 class SimpleSwiftLibTest {
 
     @Test
@@ -52,5 +51,19 @@ class SimpleSwiftLibTest {
     fun testStringParameterDoesNotThrow() {
         // String is marshalled to a null-terminated UTF-8 C string via .cstr.
         printMessage("Hello from Kotlin/Native!")
+    }
+
+    @Test
+    fun testStringReturn() {
+        // greet(name:) returns a Swift-heap-allocated char* that the generated
+        // wrapper copies via toKString() and frees via platform.posix.free.
+        val result = greet("World")
+        assertEquals("Hello, World!", result)
+    }
+
+    @Test
+    fun testStringReturnEmptyInput() {
+        val result = greet("")
+        assertEquals("Hello, !", result)
     }
 }

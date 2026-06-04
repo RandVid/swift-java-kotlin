@@ -247,16 +247,102 @@ struct KotlinNativeTopLevelFunctionsTests {
     )
   }
 
-  // String *returns* are still unsupported (the thunk returns a heap pointer
-  // the caller must free).
+  // MARK: - String return (thunk returns heap-allocated char*; wrapper copies then frees)
+
   @Test
-  func string_asReturn_isSkipped() throws {
+  func string_asReturn() throws {
     try assertOutput(
       input: "public func makeGreeting() -> String { \"hi\" }",
       .kotlinNative,
       .java,
       expectedChunks: [
-        "// Skipped makeGreeting: String return type not supported in kotlinNative mode"
+        """
+        fun makeGreeting(): String {
+          val ptr = swiftjava_SwiftModule_makeGreeting() ?: return ""
+          val result = ptr.toKString()
+          free(ptr)
+          return result
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func string_asReturn_withStringParam() throws {
+    try assertOutput(
+      input: "public func greet(name: String) -> String { \"Hello, \" + name }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun greet(name: String): String {
+          val ptr = swiftjava_SwiftModule_greet_name(name.cstr) ?: return ""
+          val result = ptr.toKString()
+          free(ptr)
+          return result
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func string_asReturn_withPrimitiveParam() throws {
+    try assertOutput(
+      input: "public func intToString(value: Int) -> String { String(value) }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun intToString(value: Long): String {
+          val ptr = swiftjava_SwiftModule_intToString_value(value) ?: return ""
+          val result = ptr.toKString()
+          free(ptr)
+          return result
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func string_asReturn_importsFree() throws {
+    try assertOutput(
+      input: "public func makeGreeting() -> String { \"hi\" }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        "import platform.posix.free"
+      ]
+    )
+  }
+
+  @Test
+  func string_asReturn_importsToKString() throws {
+    // toKString lives in kotlinx.cinterop which is wildcard-imported.
+    try assertOutput(
+      input: "public func makeGreeting() -> String { \"hi\" }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        "import kotlinx.cinterop.*"
+      ]
+    )
+  }
+
+  @Test
+  func string_primitiveOnly_doesNotImportFree() throws {
+    // When no function returns String, platform.posix.free must not be imported.
+    try assertOutput(
+      input: "public func add(a: Int, b: Int) -> Int { a + b }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        "fun add(a: Long, b: Long): Long {"
+      ],
+      notExpectedChunks: [
+        "import platform.posix.free"
       ]
     )
   }
