@@ -49,11 +49,12 @@ Three findings during implementation changed the original plan:
 3. **`Bool` → `BOOL` → Kotlin `Boolean`** is confirmed (the open question from the original plan): with the clean-C
    header declaring `_Bool`, cinterop binds it to `Boolean` and pass-through works — no conversion code needed.
 
-**String parameters are now supported** (returns still deferred). The C declaration comes from FFM's `CdeclLowering`
-(`String` → `UnsafePointer<Int8>` → `const int8_t *`); the Kotlin wrapper passes `name.cstr` (a null-terminated UTF-8
-buffer cinterop pins for the call), matching the thunk's `String(cString:)`. A `String` *return* is still skipped
-because the thunk hands back a heap `int8_t *` from `_swiftjava_stringToCString(...)` that the caller must free — that
-needs a `toKString()` + free step (next).
+**String parameters and String returns are both now supported.** Parameters: the C declaration comes from FFM's
+`CdeclLowering` (`String` → `UnsafePointer<Int8>` → `const int8_t *`); the Kotlin wrapper passes `name.cstr` (a
+null-terminated UTF-8 buffer cinterop pins for the call), matching the thunk's `String(cString:)`. Returns: the thunk
+hands back a heap-allocated `int8_t *` from `_swiftjava_stringToCString(...)`; the generated wrapper captures the
+pointer, copies it via `.toKString()`, calls `free(ptr)` (`import platform.posix.free`), and returns the Kotlin
+`String`. Phase 5 is complete.
 
 ### Design decision: the cinterop C header (must generate; should reuse FFM's C lowering)
 
@@ -198,8 +199,8 @@ host-specific path wiring (the cinterop `.def` with `-I`/`-L`/`-rpath`) lives in
 - Add `KotlinNativeSampleApp` to the **`verify-samples-macos`** matrix ONLY (not the Linux `verify-samples` — cinterop/macosArm64 require the macOS SDK + konan toolchain).
 - Add `Samples/KotlinNativeSampleApp/ci-validate.sh` mirroring `KotlinFFMSampleApp/ci-validate.sh` (swift build, then `gradlew :…:macosArm64Test`), or confirm `.github/scripts/validate_sample.sh` handles a KMP module.
 
-### Phase 5 — (later, out of initial scope) strings / allocating returns
-- String params via `memScoped { … cstr … }`; String returns via the `int8_t*`-returning thunk → `toKString()` → free with the `SwiftRuntimeFunctions`/SwiftKit free symbol. Phase 1 deliberately skips strings exactly like the JVM mode does today.
+### Phase 5 — ✅ strings / allocating returns (done)
+- String params: passed via `.cstr` (null-terminated UTF-8; cinterop pins during call). String returns: thunk returns a heap `int8_t *`; generated wrapper does `ptr.toKString()` then `free(ptr)` (via `import platform.posix.free`).
 
 ---
 
@@ -233,7 +234,7 @@ host-specific path wiring (the cinterop `.def` with `-I`/`-L`/`-rpath`) lives in
 - **Generator smoke:** `swift run swift-java jextract --swift-module SimpleSwiftLib --input-swift Samples/KotlinNativeSampleApp/Sources/SimpleSwiftLib --output-swift /tmp/kn-swift --output-java /tmp/kn-kotlin --java-package com.example.kotlinnative --mode kotlinNative` → inspect emitted `<Module>.kt`.
 - **Integration (macOS arm64):** `cd Samples/KotlinNativeSampleApp && ./ci-validate.sh` (or `./gradlew :Samples:KotlinNativeSampleApp:macosArm64Test`) — exercises dylib build → cinterop → link → Kotlin/Native tests calling real Swift.
 - **Cross-platform safety:** `./gradlew build -PskipSamples=true` and a Linux `./gradlew build` must remain green (OS guard skips the macOS-only module).
-- **Parity:** same `SimpleSwiftLib.swift` as the JVM sample; confirm `add/isPositive/divide/helloWorld/printMessage` behave identically and `greet` (String return) is `// Skipped` in both modes.
+- **Parity:** same `SimpleSwiftLib.swift` as the JVM sample; confirm `add/isPositive/divide/helloWorld/printMessage/greet` all work. (`greet` returns a `String`; the kotlinNative wrapper now calls `toKString()` + `free()`; the JVM Kotlin delegation mode still skips String returns.)
 
 ---
 

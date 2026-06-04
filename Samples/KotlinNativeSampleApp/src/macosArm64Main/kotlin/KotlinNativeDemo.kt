@@ -42,5 +42,14 @@ fun main() {
     println("\n5. Calling void function with String parameter:")
     printMessage("   This message is printed from Swift!")
 
+//    for (i in 1..1000) {
+//        println("   Kotlin Iteration $i")
+//        printMessage("   Swift Iteration $i")
+//    }
+
+    println("\n6. Calling function with String parameter and return:")
+    val wassup = greet("Fellow Kotliner")
+    println("   greet(\"Fellow Kotliner\") = $wassup")
+
     println("\n=== All Kotlin/Native -> Swift cinterop calls successful! ===")
 }

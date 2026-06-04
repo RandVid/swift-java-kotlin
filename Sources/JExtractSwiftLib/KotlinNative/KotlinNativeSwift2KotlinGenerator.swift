@@ -147,12 +147,10 @@ package class KotlinNativeSwift2KotlinGenerator {
       }
     }
 
-    // Return type. String returns are still unsupported (the thunk hands back a
-    // heap pointer the caller must free — deferred).
+    // Return type. String returns are supported: the thunk returns a
+    // heap-allocated `char*` that the wrapper copies via `.toKString()` and
+    // then frees via `free` (imported from `platform.posix`).
     let ktReturnType = swiftTypeToKotlin(decl.functionSignature.result.type)
-    if ktReturnType == "String" {
-      return skip("String return type not supported in kotlinNative mode")
-    }
     guard let ktReturn = ktReturnType else {
       return skip("unsupported return type '\(decl.functionSignature.result.type)'")
     }
@@ -203,13 +201,15 @@ package class KotlinNativeSwift2KotlinGenerator {
     printer.print("package \(kotlinPackage)\n")
     printer.print("import \(cinteropPackage).*")
 
-    // `.cstr` (and other interop conversions) live in kotlinx.cinterop.
-    let needsCInterop = resolvedFunctions().contains {
-      if case .emit(let fn) = $0 { return fn.usesCInterop }
+    printer.print("import kotlinx.cinterop.*")
+    // `free` is needed to release the heap-allocated `char*` returned by
+    // String-returning thunks; it is NOT in kotlinx.cinterop.
+    let needsFree = resolvedFunctions().contains {
+      if case .emit(let fn) = $0 { return fn.kotlinReturn == "String" }
       return false
     }
-    if needsCInterop {
-      printer.print("import kotlinx.cinterop.cstr")
+    if needsFree {
+      printer.print("import platform.posix.free")
     }
     printer.print("")
 
@@ -230,9 +230,17 @@ package class KotlinNativeSwift2KotlinGenerator {
     let argsString = fn.callArgs.joined(separator: ", ")
 
     printer.print("fun \(fn.kotlinName)(\(paramsString)): \(fn.kotlinReturn) {\(throwsComment)")
-    if fn.kotlinReturn == "Unit" {
+    switch fn.kotlinReturn {
+    case "Unit":
       printer.print("  \(fn.thunkName)(\(argsString))")
-    } else {
+    case "String":
+      // The thunk returns a heap-allocated `char*` (strdup'd by Swift). Copy
+      // it to a Kotlin String and free the C allocation.
+      printer.print("  val ptr = \(fn.thunkName)(\(argsString)) ?: return \"\"")
+      printer.print("  val result = ptr.toKString()")
+      printer.print("  free(ptr)")
+      printer.print("  return result")
+    default:
       printer.print("  return \(fn.thunkName)(\(argsString))")
     }
     printer.print("}")
