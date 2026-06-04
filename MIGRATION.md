@@ -82,6 +82,29 @@ emit `cFunction.description`. This keeps one C-ABI source of truth across FFM/JN
 for non-primitive support** (Phase 5), where the cdecl thunk signature is not a 1:1 type map (it adds out-pointers for
 indirect returns and self-pointers) and hand-rolling would produce wrong signatures.
 
+### Build decision: cinterop runs from a locally-built Kotlin/Native distribution
+
+For the migration the sample builds cinterop against a **local** Kotlin/Native dist
+(`~/IdeaProjects/kotlin/kotlin-native/dist`) instead of the one the Kotlin Gradle plugin auto-downloads
+(`~/.konan/kotlin-native-prebuilt-…`). The redirect is the standard `kotlin.native.home` Gradle property; the plugin
+then resolves the cinterop executable from `<kotlin.native.home>/bin/cinterop` and logs *"A user-provided
+Kotlin/Native distribution configured … Disabling Kotlin Native Toolchain auto-provisioning."*
+
+Constraints found while wiring this:
+- The plugin reads `kotlin.native.home` as a **real Gradle property at apply time** — it does *not* see
+  `extraProperties` injected from the build script (verified: a script-injected value still triggered the bundle
+  download), and a subproject `gradle.properties` is ignored by Gradle. The value must therefore live in a real Gradle
+  properties file (`~/.gradle/gradle.properties` or the repo root) or be passed via `-Pkotlin.native.home=<dist>`.
+- It is set **machine-local and uncommitted** in `~/.gradle/gradle.properties`, so no absolute path lands in the repo
+  and CI / other contributors are unaffected (tradeoff: it then applies to *all* K/N Gradle projects on the machine;
+  move it to the repo-root `gradle.properties` to scope it to this repo at the cost of committing the path).
+- This swaps the **entire** K/N toolchain — the plugin has no supported way to override only the cinterop binary.
+- `Samples/KotlinNativeSampleApp/build.gradle.kts` adds a fail-fast guard: when `kotlin.native.home` is set it
+  verifies `<dist>/bin/cinterop` exists, failing with a clear message rather than letting cinterop blow up later.
+- The typed `tasks.withType<CInteropProcess>()` wiring was replaced with name-based matching
+  (`tasks.matching { it.name.startsWith("cinterop") }`), dropping the
+  `import org.jetbrains.kotlin.gradle.tasks.CInteropProcess`.
+
 ---
 
 ## Current-state findings (confirmed)
@@ -219,7 +242,7 @@ host-specific path wiring (the cinterop `.def` with `-I`/`-L`/`-rpath`) lives in
 1. **`BOOL` cinterop mapping (verify in Phase 3).** Expected `Boolean` pass-through on Apple targets, but `BOOL` may surface as `Byte`. If so, the generator emits `if (x) 1 else 0` inbound / `result != 0` outbound. Inspect cinterop's generated signatures for `isPositive`; make Bool handling conditional on the verified mapping. *(One type may need conversion code; everything else passes through.)*
 2. **Swift runtime linking / rpath (highest integration effort).** dylib needs `@rpath/libSwiftJava.dylib`, `@rpath/libSwiftRuntimeFunctions.dylib`, `/usr/lib/swift/libswiftCore.dylib`. `.def` `linkerOpts` must carry `-L` for the SPM debug dir + `/usr/lib/swift` and baked `-rpath`. Prefer `swiftRuntimeLibraryPaths()` over hardcoding.
 3. **Header path is config-specific.** `-I …/debug/SimpleSwiftLib.build/include` assumes a debug build; parameterize if release is ever used. cinterop must depend on the def-generation + `swift build` tasks.
-4. **Toolchain availability.** cinterop needs the konan toolchain (fetched by KMP plugin) + Xcode CLT for the macOS SDK headers — present only on the self-hosted macOS runner; hence CI placement and the Linux OS guard. Confirm the runner has CLT and konan can be fetched/cached.
+4. **Toolchain availability.** cinterop needs a Kotlin/Native toolchain + Xcode CLT for the macOS SDK headers — present only on the self-hosted macOS runner; hence CI placement and the Linux OS guard. Local development points `kotlin.native.home` at a locally-built dist (see *Build decision* above); CI, with no such property set, falls back to the KMP-plugin-fetched konan bundle. Confirm the runner has CLT and konan can be fetched/cached (or set `kotlin.native.home` there too).
 5. **`@_cdecl` symbol stability — confirmed non-issue.** `nm -gU` shows unmangled exported symbols; cinterop binds by C name from the header; the `jextract`/`swift build` task dependency keeps dylib and `.def` in sync.
 
 ### Open questions for the team (non-blocking)

@@ -12,8 +12,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-import org.jetbrains.kotlin.gradle.tasks.CInteropProcess
-
 plugins {
     kotlin("multiplatform")
 }
@@ -23,6 +21,25 @@ version = "1.0-SNAPSHOT"
 
 repositories {
     mavenCentral()
+}
+
+// This sample drives cinterop from a locally-built Kotlin/Native distribution
+// instead of the one the Kotlin Gradle plugin downloads. The redirect happens
+// via the `kotlin.native.home` Gradle property (set it in ~/.gradle/gradle.properties
+// or pass `-Pkotlin.native.home=<dist>`); the plugin then resolves the cinterop
+// executable from `<kotlin.native.home>/bin/cinterop`. The plugin reads this
+// property at apply time, so it must be a real Gradle property — it cannot be
+// injected from this build script.
+//
+// Fail fast with a clear message if a custom distribution is configured but its
+// cinterop binary is missing, rather than letting cinterop blow up later.
+(findProperty("kotlin.native.home") as String?)?.let { nativeHome ->
+    val cinterop = file("$nativeHome/bin/cinterop")
+    require(cinterop.exists()) {
+        "kotlin.native.home is set to '$nativeHome' but its cinterop binary is " +
+            "missing at ${cinterop.absolutePath}. Point kotlin.native.home at a " +
+            "valid Kotlin/Native distribution."
+    }
 }
 
 // Swift build outputs (the dynamic library + the jextract-generated
@@ -133,7 +150,7 @@ kotlin {
 
 // Task wiring: the cinterop step needs the dylib + header + .def; the Kotlin
 // compilation needs the generated wrappers.
-tasks.withType<CInteropProcess>().configureEach {
+tasks.matching { it.name.startsWith("cinterop") }.configureEach {
     dependsOn(swiftBuild, generateKotlinNativeBindings, generateCinteropDef)
 }
 tasks.matching { it.name == "compileKotlinMacosArm64" }.configureEach {
