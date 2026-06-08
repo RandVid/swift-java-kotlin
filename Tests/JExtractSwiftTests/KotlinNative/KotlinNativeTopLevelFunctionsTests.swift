@@ -383,6 +383,152 @@ struct KotlinNativeTopLevelFunctionsTests {
     )
   }
 
+  // MARK: - Int8 / Int16 / Int64 / Float
+
+  @Test
+  func int8_asParameter() throws {
+    try assertOutput(
+      input: "public func acceptInt8(x: Int8) {}",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun acceptInt8(x: Byte): Unit {
+          swiftjava_SwiftModule_acceptInt8_x(x)
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func int8_asReturn() throws {
+    try assertOutput(
+      input: "public func returnInt8() -> Int8 { 0 }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun returnInt8(): Byte {
+          return swiftjava_SwiftModule_returnInt8()
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func int16_asParameter() throws {
+    try assertOutput(
+      input: "public func acceptInt16(x: Int16) {}",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun acceptInt16(x: Short): Unit {
+          swiftjava_SwiftModule_acceptInt16_x(x)
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func int16_asReturn() throws {
+    try assertOutput(
+      input: "public func returnInt16() -> Int16 { 0 }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun returnInt16(): Short {
+          return swiftjava_SwiftModule_returnInt16()
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func int64_asParameter() throws {
+    try assertOutput(
+      input: "public func acceptInt64(x: Int64) {}",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun acceptInt64(x: Long): Unit {
+          swiftjava_SwiftModule_acceptInt64_x(x)
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func int64_asReturn() throws {
+    try assertOutput(
+      input: "public func returnInt64() -> Int64 { 0 }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun returnInt64(): Long {
+          return swiftjava_SwiftModule_returnInt64()
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func float_asParameter() throws {
+    try assertOutput(
+      input: "public func acceptFloat(x: Float) {}",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun acceptFloat(x: Float): Unit {
+          swiftjava_SwiftModule_acceptFloat_x(x)
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func float_asReturn() throws {
+    try assertOutput(
+      input: "public func returnFloat() -> Float { 0.0 }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun returnFloat(): Float {
+          return swiftjava_SwiftModule_returnFloat()
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func float_parameterAndReturn() throws {
+    try assertOutput(
+      input: "public func halve(x: Float) -> Float { x / 2.0 }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun halve(x: Float): Float {
+          return swiftjava_SwiftModule_halve_x(x)
+        }
+        """
+      ]
+    )
+  }
+
   // MARK: - Unsupported types are skipped
 
   @Test
