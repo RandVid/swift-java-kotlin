@@ -67,5 +67,21 @@ fun main() {
     val floatSum = addFloat(1.5f, 2.5f)
     println("   addFloat(1.5, 2.5) = $floatSum")
 
+    println("\n11. Calling function with UInt8 parameters and return:")
+    val ubyteSum = addUInt8(10u, 20u)
+    println("   addUInt8(10, 20) = $ubyteSum")
+
+    println("\n12. Calling function with UInt16 parameters and return:")
+    val ushortSum = addUInt16(1000u, 2000u)
+    println("   addUInt16(1000, 2000) = $ushortSum")
+
+    println("\n13. Calling function with UInt32 parameters and return:")
+    val uintSum = addUInt32(1_000_000u, 2_000_000u)
+    println("   addUInt32(1_000_000, 2_000_000) = $uintSum")
+
+    println("\n14. Calling function with UInt64 parameters and return:")
+    val ulongSum = addUInt64(1_000_000_000uL, 2_000_000_000uL)
+    println("   addUInt64(1_000_000_000, 2_000_000_000) = $ulongSum")
+
     println("\n=== All Kotlin/Native -> Swift cinterop calls successful! ===")
 }
