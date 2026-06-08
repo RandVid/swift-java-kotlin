@@ -90,4 +90,28 @@ class SimpleSwiftLibTest {
         assertEquals(4.0f, addFloat(1.5f, 2.5f))
         assertEquals(0.0f, addFloat(-1.0f, 1.0f))
     }
+
+    @Test
+    fun testAddUInt8() {
+        assertEquals(30u.toUByte(), addUInt8(10u, 20u))
+        assertEquals(UByte.MAX_VALUE, addUInt8((UByte.MAX_VALUE - 0u).toUByte(), 0u))
+    }
+
+    @Test
+    fun testAddUInt16() {
+        assertEquals(3000u.toUShort(), addUInt16(1000u, 2000u))
+        assertEquals(0u.toUShort(), addUInt16(0u, 0u))
+    }
+
+    @Test
+    fun testAddUInt32() {
+        assertEquals(3_000_000u, addUInt32(1_000_000u, 2_000_000u))
+        assertEquals(0u, addUInt32(0u, 0u))
+    }
+
+    @Test
+    fun testAddUInt64() {
+        assertEquals(3_000_000_000uL, addUInt64(1_000_000_000uL, 2_000_000_000uL))
+        assertEquals(0uL, addUInt64(0uL, 0uL))
+    }
 }

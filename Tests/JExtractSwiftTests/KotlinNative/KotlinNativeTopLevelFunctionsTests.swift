@@ -529,6 +529,168 @@ struct KotlinNativeTopLevelFunctionsTests {
     )
   }
 
+  // MARK: - Unsigned integers
+
+  @Test
+  func uint8_asParameter() throws {
+    try assertOutput(
+      input: "public func acceptUInt8(x: UInt8) {}",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun acceptUInt8(x: UByte): Unit {
+          swiftjava_SwiftModule_acceptUInt8_x(x)
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func uint8_asReturn() throws {
+    try assertOutput(
+      input: "public func returnUInt8() -> UInt8 { 0 }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun returnUInt8(): UByte {
+          return swiftjava_SwiftModule_returnUInt8()
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func uint16_asParameter() throws {
+    try assertOutput(
+      input: "public func acceptUInt16(x: UInt16) {}",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun acceptUInt16(x: UShort): Unit {
+          swiftjava_SwiftModule_acceptUInt16_x(x)
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func uint16_asReturn() throws {
+    try assertOutput(
+      input: "public func returnUInt16() -> UInt16 { 0 }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun returnUInt16(): UShort {
+          return swiftjava_SwiftModule_returnUInt16()
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func uint32_asParameter() throws {
+    try assertOutput(
+      input: "public func acceptUInt32(x: UInt32) {}",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun acceptUInt32(x: UInt): Unit {
+          swiftjava_SwiftModule_acceptUInt32_x(x)
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func uint32_asReturn() throws {
+    try assertOutput(
+      input: "public func returnUInt32() -> UInt32 { 0 }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun returnUInt32(): UInt {
+          return swiftjava_SwiftModule_returnUInt32()
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func uint64_asParameter() throws {
+    try assertOutput(
+      input: "public func acceptUInt64(x: UInt64) {}",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun acceptUInt64(x: ULong): Unit {
+          swiftjava_SwiftModule_acceptUInt64_x(x)
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func uint64_asReturn() throws {
+    try assertOutput(
+      input: "public func returnUInt64() -> UInt64 { 0 }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun returnUInt64(): ULong {
+          return swiftjava_SwiftModule_returnUInt64()
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func uint_asParameter() throws {
+    try assertOutput(
+      input: "public func acceptUInt(x: UInt) {}",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun acceptUInt(x: ULong): Unit {
+          swiftjava_SwiftModule_acceptUInt_x(x)
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func uint_asReturn() throws {
+    try assertOutput(
+      input: "public func returnUInt() -> UInt { 0 }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun returnUInt(): ULong {
+          return swiftjava_SwiftModule_returnUInt()
+        }
+        """
+      ]
+    )
+  }
+
   // MARK: - Unsupported types are skipped
 
   @Test

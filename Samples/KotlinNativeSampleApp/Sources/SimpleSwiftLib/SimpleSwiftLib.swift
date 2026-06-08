@@ -55,3 +55,19 @@ public func addInt64(a: Int64, b: Int64) -> Int64 {
 public func addFloat(a: Float, b: Float) -> Float {
   return a + b
 }
+
+public func addUInt8(a: UInt8, b: UInt8) -> UInt8 {
+  return a + b
+}
+
+public func addUInt16(a: UInt16, b: UInt16) -> UInt16 {
+  return a + b
+}
+
+public func addUInt32(a: UInt32, b: UInt32) -> UInt32 {
+  return a + b
+}
+
+public func addUInt64(a: UInt64, b: UInt64) -> UInt64 {
+  return a + b
+}
