@@ -24,15 +24,16 @@ entirely while reusing 100% of the existing Swift thunk generation.
 **Kotlin Multiplatform** sample `Samples/KotlinNativeSampleApp`.
 
 **Intended outcome:** `swift-java jextract --mode kotlinNative` generates Kotlin/Native wrappers that call the Swift
-`@_cdecl` thunks via cinterop; a KMP sample compiles and runs them on macOS arm64; parity with the JVM mode's
-primitive-only surface (Int/Int32/Bool/Double/Void).
+`@_cdecl` thunks via cinterop; a KMP sample compiles and runs them on macOS arm64; full primitive coverage
+(all signed and unsigned integer widths, Bool, Float, Double, Void, String).
 
 ---
 
 ## Implementation status
 
-Phases 0–4 are **done and verified** (`./gradlew :Samples:KotlinNativeSampleApp:macosArm64Test` passes, executing real
-Swift through cinterop). Phase 5 (String / allocating returns) remains, deferred as below.
+Phases 0–5 are **done and verified** (`./gradlew :Samples:KotlinNativeSampleApp:macosArm64Test` passes, executing real
+Swift through cinterop). Signed primitive coverage has since been expanded beyond the original Int/Int32/Bool/Double
+set — see *Primitive expansion* below.
 
 Three findings during implementation changed the original plan:
 
@@ -114,7 +115,7 @@ Constraints found while wiring this:
 - **Dispatch:** `Sources/JExtractSwiftLib/Swift2Java.swift:123` — exhaustive `switch config.effectiveMode` instantiating each generator.
 - **Existing Kotlin/JVM generator:** `Sources/JExtractSwiftLib/Kotlin/KotlinSwift2KotlinGenerator.swift` — emits one `<Module>.kt` of top-level funcs delegating to a Java FFM class; reuses `--output-java` (dir) and `--java-package` (package); primitives only; skips String returns / async / members / unsupported with `// Skipped …` comments.
 - **Thunk names:** `Sources/JExtractSwiftLib/ThunkNameRegistry.swift` + `Sources/JExtractSwiftLib/FFM/FFMSwift2JavaGenerator+SwiftThunkPrinting.swift` produce `swiftjava_<module>_<name>[_<labels>]`. These C symbols + the `-Swift.h` header are emitted by the SwiftPM `JExtractSwiftPlugin` during `swift build` (same as the FFM sample).
-- **C type mapping in the header:** Swift `Int`→`NSInteger`(64-bit)→cinterop `Long`; `Int32`→`int`→`Int`; `Bool`→`BOOL`→`Boolean` (to be verified, see Risks); `Double`→`double`→`Double`; `void`→`Unit`.
+- **C type mapping in the header:** Swift `Int`→`ptrdiff_t`→cinterop `Long`; `Int8`→`int8_t`→`Byte`; `Int16`→`int16_t`→`Short`; `Int32`→`int32_t`→`Int`; `Int64`→`int64_t`→`Long`; `UInt`→`size_t`→`ULong`; `UInt8`→`uint8_t`→`UByte`; `UInt16`→`uint16_t`→`UShort`; `UInt32`→`uint32_t`→`UInt`; `UInt64`→`uint64_t`→`ULong`; `Bool`→`_Bool`→`Boolean` (confirmed, no conversion code needed); `Float`→`float`→`Float`; `Double`→`double`→`Double`; `void`→`Unit`.
 - **Test harness:** `Tests/JExtractSwiftTests/Asserts/TextAssertions.swift` `assertOutput(…)` dispatches by `(mode, RenderKind)`; JVM Kotlin tests live in `Tests/JExtractSwiftTests/Kotlin/KotlinTopLevelFunctionsTests.swift` asserting exact `.kt` chunks.
 - **Build:** Gradle 9.4.0, Kotlin plugin 2.3.10. `settings.gradle.kts` auto-discovers `Samples/*` containing `build.gradle.kts` (unless `-PskipSamples`). `BuildLogic/src/main/kotlin/utilities/registerJextractTask.kt` registers the `swift build` task; `javaLibraryPaths.kt`/`SwiftcTargetInfo.kt` can compute Swift runtime paths via `swiftc -print-target-info`.
 - **CI:** `.github/workflows/pull_request.yml` has `verify-samples` (Linux) and `verify-samples-macos` (self-hosted macOS ARM64). `KotlinFFMSampleApp` is NOT in either matrix. No Kotlin/Native scaffolding exists anywhere (no KMP, no cinterop, no `.def`).
@@ -202,6 +203,32 @@ host-specific path wiring (the cinterop `.def` with `-I`/`-L`/`-rpath`) lives in
 ### Phase 5 — ✅ strings / allocating returns (done)
 - String params: passed via `.cstr` (null-terminated UTF-8; cinterop pins during call). String returns: thunk returns a heap `int8_t *`; generated wrapper does `ptr.toKString()` then `free(ptr)` (via `import platform.posix.free`).
 
+### Primitive expansion — ✅ signed (Int8 / Int16 / Int64 / Float) and unsigned (UInt / UInt8 / UInt16 / UInt32 / UInt64) (done)
+- `KotlinNativeSwift2KotlinGenerator.swiftTypeToKotlin` extended to cover all integer widths and `Float`:
+
+  | Swift    | C (`@_cdecl`) | Kotlin    |
+  |----------|--------------|-----------|
+  | `Int`    | `ptrdiff_t`  | `Long`    |
+  | `Int8`   | `int8_t`     | `Byte`    |
+  | `Int16`  | `int16_t`    | `Short`   |
+  | `Int32`  | `int32_t`    | `Int`     |
+  | `Int64`  | `int64_t`    | `Long`    |
+  | `UInt`   | `size_t`     | `ULong`   |
+  | `UInt8`  | `uint8_t`    | `UByte`   |
+  | `UInt16` | `uint16_t`   | `UShort`  |
+  | `UInt32` | `uint32_t`   | `UInt`    |
+  | `UInt64` | `uint64_t`   | `ULong`   |
+  | `Bool`   | `_Bool`      | `Boolean` |
+  | `Float`  | `float`      | `Float`   |
+  | `Double` | `double`     | `Double`  |
+  | `String` | `int8_t *`   | `String`  |
+  | `Void`   | `void`       | `Unit`    |
+
+  Note: `UInt` and `UInt64` both map to `ULong` (Swift's `UInt` is pointer-sized = 64-bit on arm64). Kotlin unsigned types are stable since Kotlin 1.5; no opt-in annotation is required.
+- The `CdeclLowering` / `CRepresentation` machinery already handled all these C types; only the Kotlin-side mapping was missing in both passes.
+- Signed expansion: 9 new unit tests; `addInt8/addInt16/addInt64/addFloat` in the sample lib.
+- Unsigned expansion: 10 new unit tests (parameter + return per type); `addUInt8/addUInt16/addUInt32/addUInt64` in the sample lib; demo items 11–14; integration test assertions with `u`/`uL` literals and `.toUByte()`/`.toUShort()` casts.
+
 ---
 
 ## Files to create / modify
@@ -234,13 +261,13 @@ host-specific path wiring (the cinterop `.def` with `-I`/`-L`/`-rpath`) lives in
 - **Generator smoke:** `swift run swift-java jextract --swift-module SimpleSwiftLib --input-swift Samples/KotlinNativeSampleApp/Sources/SimpleSwiftLib --output-swift /tmp/kn-swift --output-java /tmp/kn-kotlin --java-package com.example.kotlinnative --mode kotlinNative` → inspect emitted `<Module>.kt`.
 - **Integration (macOS arm64):** `cd Samples/KotlinNativeSampleApp && ./ci-validate.sh` (or `./gradlew :Samples:KotlinNativeSampleApp:macosArm64Test`) — exercises dylib build → cinterop → link → Kotlin/Native tests calling real Swift.
 - **Cross-platform safety:** `./gradlew build -PskipSamples=true` and a Linux `./gradlew build` must remain green (OS guard skips the macOS-only module).
-- **Parity:** same `SimpleSwiftLib.swift` as the JVM sample; confirm `add/isPositive/divide/helloWorld/printMessage/greet` all work. (`greet` returns a `String`; the kotlinNative wrapper now calls `toKString()` + `free()`; the JVM Kotlin delegation mode still skips String returns.)
+- **Parity:** `add/isPositive/divide/helloWorld/printMessage/greet` all work end-to-end. (`greet` returns a `String`; the kotlinNative wrapper calls `toKString()` + `free()`; the JVM Kotlin delegation mode still skips String returns.) `addInt8/addInt16/addInt64/addFloat` exercise signed primitives; `addUInt8/addUInt16/addUInt32/addUInt64` exercise unsigned primitives — all verified through the full cinterop stack.
 
 ---
 
 ## Risks & open questions
 
-1. **`BOOL` cinterop mapping (verify in Phase 3).** Expected `Boolean` pass-through on Apple targets, but `BOOL` may surface as `Byte`. If so, the generator emits `if (x) 1 else 0` inbound / `result != 0` outbound. Inspect cinterop's generated signatures for `isPositive`; make Bool handling conditional on the verified mapping. *(One type may need conversion code; everything else passes through.)*
+1. **`Bool` cinterop mapping — resolved.** `_Bool` (from the clean-C header) maps to Kotlin `Boolean` with no conversion code needed. cinterop generates a direct pass-through for `isPositive`.
 2. **Swift runtime linking / rpath (highest integration effort).** dylib needs `@rpath/libSwiftJava.dylib`, `@rpath/libSwiftRuntimeFunctions.dylib`, `/usr/lib/swift/libswiftCore.dylib`. `.def` `linkerOpts` must carry `-L` for the SPM debug dir + `/usr/lib/swift` and baked `-rpath`. Prefer `swiftRuntimeLibraryPaths()` over hardcoding.
 3. **Header path is config-specific.** `-I …/debug/SimpleSwiftLib.build/include` assumes a debug build; parameterize if release is ever used. cinterop must depend on the def-generation + `swift build` tasks.
 4. **Toolchain availability.** cinterop needs a Kotlin/Native toolchain + Xcode CLT for the macOS SDK headers — present only on the self-hosted macOS runner; hence CI placement and the Linux OS guard. Local development points `kotlin.native.home` at a locally-built dist (see *Build decision* above); CI, with no such property set, falls back to the KMP-plugin-fetched konan bundle. Confirm the runner has CLT and konan can be fetched/cached (or set `kotlin.native.home` there too).
