@@ -281,8 +281,12 @@ package class KotlinNativeSwift2KotlinGenerator {
     if let known = t.asNominalTypeDeclaration?.knownTypeKind {
       switch known {
       case .int: return "Long"
+      case .int8: return "Byte"
+      case .int16: return "Short"
       case .int32: return "Int"
+      case .int64: return "Long"
       case .bool: return "Boolean"
+      case .float: return "Float"
       case .double: return "Double"
       case .string: return "String"
       case .void: return "Unit"
@@ -292,8 +296,12 @@ package class KotlinNativeSwift2KotlinGenerator {
 
     switch String(describing: t) {
     case "Int", "Swift.Int": return "Long"
+    case "Int8", "Swift.Int8": return "Byte"
+    case "Int16", "Swift.Int16": return "Short"
     case "Int32", "Swift.Int32": return "Int"
+    case "Int64", "Swift.Int64": return "Long"
     case "Bool", "Swift.Bool": return "Boolean"
+    case "Float", "Swift.Float": return "Float"
     case "Double", "Swift.Double": return "Double"
     case "String", "Swift.String": return "String"
     case "Void", "Swift.Void", "()": return "Unit"

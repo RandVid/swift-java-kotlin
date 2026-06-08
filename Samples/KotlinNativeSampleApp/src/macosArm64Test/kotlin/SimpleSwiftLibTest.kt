@@ -66,4 +66,28 @@ class SimpleSwiftLibTest {
         val result = greet("")
         assertEquals("Hello, !", result)
     }
+
+    @Test
+    fun testAddInt8() {
+        assertEquals(7.toByte(), addInt8(3, 4))
+        assertEquals(0.toByte(), addInt8(-5, 5))
+    }
+
+    @Test
+    fun testAddInt16() {
+        assertEquals(3000.toShort(), addInt16(1000, 2000))
+        assertEquals(0.toShort(), addInt16(-500, 500))
+    }
+
+    @Test
+    fun testAddInt64() {
+        assertEquals(3_000_000_000L, addInt64(1_000_000_000L, 2_000_000_000L))
+        assertEquals(0L, addInt64(Long.MIN_VALUE / 2, -(Long.MIN_VALUE / 2)))
+    }
+
+    @Test
+    fun testAddFloat() {
+        assertEquals(4.0f, addFloat(1.5f, 2.5f))
+        assertEquals(0.0f, addFloat(-1.0f, 1.0f))
+    }
 }

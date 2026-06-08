@@ -51,5 +51,21 @@ fun main() {
     val wassup = greet("Fellow Kotliner")
     println("   greet(\"Fellow Kotliner\") = $wassup")
 
+    println("\n7. Calling function with Int8 parameters and return:")
+    val byteSum = addInt8(10, 20)
+    println("   addInt8(10, 20) = $byteSum")
+
+    println("\n8. Calling function with Int16 parameters and return:")
+    val shortSum = addInt16(1000, 2000)
+    println("   addInt16(1000, 2000) = $shortSum")
+
+    println("\n9. Calling function with Int64 parameters and return:")
+    val longSum = addInt64(1_000_000_000L, 2_000_000_000L)
+    println("   addInt64(1_000_000_000, 2_000_000_000) = $longSum")
+
+    println("\n10. Calling function with Float parameters and return:")
+    val floatSum = addFloat(1.5f, 2.5f)
+    println("   addFloat(1.5, 2.5) = $floatSum")
+
     println("\n=== All Kotlin/Native -> Swift cinterop calls successful! ===")
 }
