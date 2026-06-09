@@ -56,7 +56,7 @@ package class KotlinNativeSwift2KotlinGenerator {
     let kotlinName: String       // e.g. "add"
     let thunkName: String        // e.g. "swiftjava_SimpleSwiftLib_add_a_b"
     let kotlinParams: [String]   // e.g. ["a: Long", "b: Long"]
-    let kotlinReturn: String     // e.g. "Long"
+    let kotlinReturn: KotlinType // e.g. .long
     /// Arguments passed to the thunk, with per-parameter conversion applied
     /// (primitives pass through; `String` becomes `name.cstr`).
     let callArgs: [String]       // e.g. ["a", "b"] or ["message.cstr"]
@@ -136,14 +136,15 @@ package class KotlinNativeSwift2KotlinGenerator {
       }
       let name = parameterName(p, at: i)
       kotlinParams.append("\(name): \(ktTy)")
-      if ktTy == "String" {
+      switch ktTy {
+      case .string:
         // The thunk takes `UnsafePointer<Int8>` and does `String(cString:)`;
         // `.cstr` yields a null-terminated UTF-8 buffer that cinterop pins for
         // the duration of the call.
         callArgs.append("\(name).cstr")
         usesCInterop = true
-      } else {
-        callArgs.append(name)
+      default:
+          callArgs.append(name)
       }
     }
 
@@ -205,7 +206,7 @@ package class KotlinNativeSwift2KotlinGenerator {
     // `free` is needed to release the heap-allocated `char*` returned by
     // String-returning thunks; it is NOT in kotlinx.cinterop.
     let needsFree = resolvedFunctions().contains {
-      if case .emit(let fn) = $0 { return fn.kotlinReturn == "String" }
+      if case .emit(let fn) = $0 { return fn.kotlinReturn == .string }
       return false
     }
     if needsFree {
@@ -231,9 +232,9 @@ package class KotlinNativeSwift2KotlinGenerator {
 
     printer.print("fun \(fn.kotlinName)(\(paramsString)): \(fn.kotlinReturn) {\(throwsComment)")
     switch fn.kotlinReturn {
-    case "Unit":
+    case .unit:
       printer.print("  \(fn.thunkName)(\(argsString))")
-    case "String":
+    case .string:
       // The thunk returns a heap-allocated `char*` (strdup'd by Swift). Copy
       // it to a Kotlin String and free the C allocation.
       printer.print("  val ptr = \(fn.thunkName)(\(argsString)) ?: return \"\"")
@@ -277,44 +278,45 @@ package class KotlinNativeSwift2KotlinGenerator {
   // MARK: - Type mapping
 
   /// Map a Swift known type to its Kotlin equivalent, or `nil` if unsupported.
-  func swiftTypeToKotlin(_ t: SwiftType) -> String? {
-    if let known = t.asNominalTypeDeclaration?.knownTypeKind {
-      switch known {
-      case .int: return "Long"
-      case .int8: return "Byte"
-      case .int16: return "Short"
-      case .int32: return "Int"
-      case .int64: return "Long"
-      case .uint: return "ULong"
-      case .uint8: return "UByte"
-      case .uint16: return "UShort"
-      case .uint32: return "UInt"
-      case .uint64: return "ULong"
-      case .bool: return "Boolean"
-      case .float: return "Float"
-      case .double: return "Double"
-      case .string: return "String"
-      case .void: return "Unit"
-      default: break
-      }
+  func swiftTypeToKotlin(_ t: SwiftType) -> KotlinType? {
+    if case .nominal(let nominalType) = t,
+      let known = nominalType.asKnownType {
+        switch known {
+        case .int: return .long
+        case .int8: return .byte
+        case .int16: return .short
+        case .int32: return .int
+        case .int64: return .long
+        case .uint: return .uLong
+        case .uint8: return .uByte
+        case .uint16: return .uShort
+        case .uint32: return .uInt
+        case .uint64: return .uLong
+        case .bool: return .boolean
+        case .float: return .float
+        case .double: return .double
+        case .string: return .string
+        case .void: return .unit
+        default: break
+        }
     }
 
     switch String(describing: t) {
-    case "Int", "Swift.Int": return "Long"
-    case "Int8", "Swift.Int8": return "Byte"
-    case "Int16", "Swift.Int16": return "Short"
-    case "Int32", "Swift.Int32": return "Int"
-    case "Int64", "Swift.Int64": return "Long"
-    case "UInt", "Swift.UInt": return "ULong"
-    case "UInt8", "Swift.UInt8": return "UByte"
-    case "UInt16", "Swift.UInt16": return "UShort"
-    case "UInt32", "Swift.UInt32": return "UInt"
-    case "UInt64", "Swift.UInt64": return "ULong"
-    case "Bool", "Swift.Bool": return "Boolean"
-    case "Float", "Swift.Float": return "Float"
-    case "Double", "Swift.Double": return "Double"
-    case "String", "Swift.String": return "String"
-    case "Void", "Swift.Void", "()": return "Unit"
+    case "Int", "Swift.Int": return .long
+    case "Int8", "Swift.Int8": return .byte
+    case "Int16", "Swift.Int16": return .short
+    case "Int32", "Swift.Int32": return .int
+    case "Int64",  "Swift.Int64":  return .long
+    case "UInt",   "Swift.UInt":   return .uLong
+    case "UInt8",  "Swift.UInt8":  return .uByte
+    case "UInt16", "Swift.UInt16": return .uShort
+    case "UInt32", "Swift.UInt32": return .uInt
+    case "UInt64", "Swift.UInt64": return .uLong
+    case "Bool",   "Swift.Bool":   return .boolean
+    case "Float",  "Swift.Float":  return .float
+    case "Double", "Swift.Double": return .double
+    case "String", "Swift.String": return .string
+    case "Void",   "Swift.Void", "()": return .unit
     default: return nil
     }
   }
