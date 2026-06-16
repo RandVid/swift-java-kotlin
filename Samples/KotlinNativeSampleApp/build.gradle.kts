@@ -1,17 +1,3 @@
-//===----------------------------------------------------------------------===//
-//
-// This source file is part of the Swift.org open source project
-//
-// Copyright (c) 2024 Apple Inc. and the Swift.org project authors
-// Licensed under Apache License v2.0
-//
-// See LICENSE.txt for license information
-// See CONTRIBUTORS.txt for the list of Swift.org project authors
-//
-// SPDX-License-Identifier: Apache-2.0
-//
-//===----------------------------------------------------------------------===//
-
 plugins {
     kotlin("multiplatform")
 }
@@ -21,25 +7,6 @@ version = "1.0-SNAPSHOT"
 
 repositories {
     mavenCentral()
-}
-
-// This sample drives cinterop from a locally-built Kotlin/Native distribution
-// instead of the one the Kotlin Gradle plugin downloads. The redirect happens
-// via the `kotlin.native.home` Gradle property (set it in ~/.gradle/gradle.properties
-// or pass `-Pkotlin.native.home=<dist>`); the plugin then resolves the cinterop
-// executable from `<kotlin.native.home>/bin/cinterop`. The plugin reads this
-// property at apply time, so it must be a real Gradle property — it cannot be
-// injected from this build script.
-//
-// Fail fast with a clear message if a custom distribution is configured but its
-// cinterop binary is missing, rather than letting cinterop blow up later.
-(findProperty("kotlin.native.home") as String?)?.let { nativeHome ->
-    val cinterop = file("$nativeHome/bin/cinterop")
-    require(cinterop.exists()) {
-        "kotlin.native.home is set to '$nativeHome' but its cinterop binary is " +
-            "missing at ${cinterop.absolutePath}. Point kotlin.native.home at a " +
-            "valid Kotlin/Native distribution."
-    }
 }
 
 // Swift build outputs (the dynamic library + the jextract-generated
@@ -74,8 +41,6 @@ val generateKotlinNativeBindings = tasks.register<Exec>("generateKotlinNativeBin
         swiftJavaTool, "jextract",
         "--swift-module", "SimpleSwiftLib",
         "--input-swift", "Samples/KotlinNativeSampleApp/Sources/SimpleSwiftLib",
-        // --output-swift is required by the CLI but unused in kotlinNative mode
-        // (the Swift thunks come from the SwiftPM plugin during `swift build`).
         "--output-swift", "Samples/KotlinNativeSampleApp/.build/kotlin-native-generated/swift",
         "--output-java", "Samples/KotlinNativeSampleApp/build/kotlin-native-generated/kotlin",
         "--java-package", "com.example.kotlinnative",
@@ -83,6 +48,7 @@ val generateKotlinNativeBindings = tasks.register<Exec>("generateKotlinNativeBin
     )
     inputs.dir("Sources/SimpleSwiftLib")
     outputs.dir(generatedKotlinDir)
+    outputs.dir(generatedHeaderDir)
     onlyIf { file(swiftJavaTool).exists() }
 }
 
