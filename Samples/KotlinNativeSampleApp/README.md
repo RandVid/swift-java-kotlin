@@ -1,38 +1,5 @@
 # KotlinNativeSampleApp
 
-Demonstrates the `kotlinNative` jextract mode: generating **Kotlin/Native**
-bindings to a Swift library that call the Swift `@_cdecl` C thunks **directly
-via cinterop**, with no JVM and no Java FFM layer.
-
-```
-Kotlin/Native test  ──▶  generated Kotlin wrappers  ──▶  cinterop bindings
-                                                              │
-                                                              ▼
-                                       Swift @_cdecl C thunks in libSimpleSwiftLib.dylib
-```
-
-Contrast with [`KotlinFFMSampleApp`](../KotlinFFMSampleApp), which targets the
-JVM and delegates through generated Java FFM classes
-(`Kotlin/JVM → Java FFM → Swift`).
-
-## How it works
-
-1. `swift build` compiles `SimpleSwiftLib` and the `JExtractSwiftPlugin` emits
-   the FFM `@_cdecl` thunks (exported C symbols like
-   `swiftjava_SimpleSwiftLib_add_a_b`).
-2. `swift-java jextract --mode kotlinNative` generates:
-   - `SimpleSwiftLib.kt` — Kotlin/Native wrappers calling the thunks, and
-   - `SimpleSwiftLib.h` — a plain-C header declaring those thunks for cinterop.
-3. Gradle writes a cinterop `.def` (pointing at the header + the dylib), runs
-   cinterop, compiles the wrappers, and links the native test binary.
-
-## Scope
-
-Top-level functions over `Int`/`Int32`/`Bool`/`Double`/`Void`, plus `String`
-**parameters** (marshalled as a null-terminated UTF-8 C string via `String.cstr`).
-`String` **returns** and other types are still skipped (a String return hands
-back a heap pointer the caller must free — see `MIGRATION.md`).
-
 ## Requirements
 
 macOS on Apple Silicon (target `macosArm64`), Xcode Command Line Tools (for the
@@ -56,3 +23,6 @@ cd Samples/KotlinNativeSampleApp && ./ci-validate.sh
 `run` is an alias for the Kotlin/Native `runDebugExecutableMacosArm64` task. The
 demo entry point is `com.example.kotlinnative.main` in
 `src/macosArm64Main/kotlin/KotlinNativeDemo.kt`.
+
+If you get `Exception in thread "main" java.lang.Error: /var/folders/7k/3x4vdcjj1w537v4w0gk3qwz40000gn/T/8637267871315052262.c:1:10: fatal error: 'SimpleSwiftLib.h' file not found`,
+clean both build directories and check whether you have built the main `swift-java` tool
