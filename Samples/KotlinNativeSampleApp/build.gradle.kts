@@ -21,6 +21,15 @@ val cinteropDefFile = layout.projectDirectory.file("native/SimpleSwiftLib.def")
 // e.g. via ci-validate.sh).
 val swiftJavaTool = "${rootDir}/.build/arm64-apple-macosx/debug/swift-java"
 
+// 0. Build the root swift-java project so the CLI tool is available.
+val buildRootProject = tasks.register<Exec>("buildRootProject") {
+    description = "Build the root swift-java project (produces the swift-java CLI)"
+    workingDir = rootDir
+    commandLine("swift", "build", "--disable-experimental-prebuilts")
+    inputs.dir("${rootDir}/Sources")
+    outputs.file(swiftJavaTool)
+}
+
 // 1. Build the Swift dynamic library. The JExtractSwiftPlugin emits the FFM
 //    @_cdecl thunks and the SimpleSwiftLib-Swift.h header during this build.
 val swiftBuild = tasks.register<Exec>("swiftBuild") {
@@ -49,7 +58,7 @@ val generateKotlinNativeBindings = tasks.register<Exec>("generateKotlinNativeBin
     inputs.dir("Sources/SimpleSwiftLib")
     outputs.dir(generatedKotlinDir)
     outputs.dir(generatedHeaderDir)
-    onlyIf { file(swiftJavaTool).exists() }
+    dependsOn(buildRootProject)
 }
 
 // 3. Write the cinterop .def with absolute paths resolved by Gradle. The
