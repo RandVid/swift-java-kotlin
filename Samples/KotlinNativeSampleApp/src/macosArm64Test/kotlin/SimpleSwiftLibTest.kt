@@ -1,10 +1,13 @@
 package com.example.kotlinnative
 
+import kotlin.native.runtime.GC
+import kotlin.native.runtime.NativeRuntimeApi
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.test.assertContentEquals
+import kotlin.test.assertFailsWith
 
 // Integration test: Kotlin/Native -> cinterop -> Swift @_cdecl thunk -> real Swift.
 // The generated wrappers live in this same package, so they are callable without
@@ -239,5 +242,386 @@ class SimpleSwiftLibTest {
     @Test
     fun testOptionalStringParamAndReturn_absent() {
         assertEquals(null, maybeUpper(null))
+    }
+
+    // Top-level global variable tests.
+
+    @Test
+    fun testGlobalVar_readWrite() {
+        globalScore = 42L
+        assertEquals(42L, globalScore)
+        globalScore = 0L  // reset for other tests
+    }
+
+    @Test
+    fun testGlobalVar_readOnly() {
+        assertEquals("1.0", appVersion)
+    }
+
+    @Test
+    fun testGlobalVar_optional_present() {
+        globalTag = 99L
+        assertEquals(99L, globalTag)
+        globalTag = null  // reset
+    }
+
+    @Test
+    fun testGlobalVar_optional_absent() {
+        globalTag = null
+        assertEquals(null, globalTag)
+    }
+
+    @Test
+    fun testGlobalVar_array_getSet() {
+        globalBytes = ubyteArrayOf(1u, 2u, 3u)
+        assertContentEquals(ubyteArrayOf(1u, 2u, 3u), globalBytes)
+        globalBytes = ubyteArrayOf()  // reset
+    }
+
+    // Custom class support: construct, call methods, read a property.
+
+    @Test
+    fun testClass_constructAndMethod() {
+        val counter = Counter(10L)
+        counter.increment(5L)
+        assertEquals(15L, counter.currentValue())
+    }
+
+    @Test
+    fun testClass_propertyGetSet() {
+        val counter = Counter(0L)
+        counter.value = 42L
+        assertEquals(42L, counter.value)
+        counter.increment(8L)
+        assertEquals(50L, counter.value)
+    }
+
+    @Test
+    fun testClass_stringReturningMethod() {
+        val counter = Counter(7L)
+        assertEquals("Counter(7)", counter.describe())
+    }
+
+    @Test
+    fun testClass_staticFactoryReturnsObject() {
+        val counter = Counter.starting(99L)
+        assertEquals(99L, counter.currentValue())
+    }
+
+    @Test
+    fun testClass_methodWithCustomParamAndReturn() {
+        val a = Counter(3L)
+        val b = Counter(4L)
+        val sum = a.plus(b)
+        assertEquals(7L, sum.currentValue())
+    }
+
+    @Test
+    fun testTopLevelFunction_customParamAndReturn() {
+        val a = Counter(2L)
+        val b = Counter(40L)
+        val c = combine(a, b)
+        assertEquals(42L, c.currentValue())
+    }
+
+    // Struct support (uniform box path).
+
+    @Test
+    fun testStruct_constructAndMethod() {
+        Point(3L, 4L).use { p ->
+            assertEquals(7L, p.sum())
+        }
+    }
+
+    @Test
+    fun testStruct_propertyAndCustomReturn() {
+        val p = Point(1L, 2L)
+        assertEquals(1L, p.x)
+        assertEquals(2L, p.y)
+        val moved = p.translated(10L, 20L)
+        assertEquals(11L, moved.x)
+        assertEquals(22L, moved.y)
+    }
+
+    @Test
+    fun testClass_useAfterCloseThrows() {
+        val counter = Counter(1L)
+        counter.close()
+        assertFailsWith<IllegalStateException> {
+            counter.currentValue()
+        }
+    }
+
+    @Test
+    fun testClass_extensionMethodIsImported() {
+        val c = Counter(1L)
+        c.sixseven()
+        assertEquals(67L, c.currentValue())
+    }
+
+    // OptionalBox: optional (T?) params and returns on constructor, property, methods.
+
+    @Test
+    fun testOptionalBox_constructor_present() {
+        val box = OptionalBox(42L)
+        assertEquals(42L, box.get())
+    }
+
+    @Test
+    fun testOptionalBox_constructor_absent() {
+        val box = OptionalBox(null)
+        assertEquals(null, box.get())
+    }
+
+    @Test
+    fun testOptionalBox_property_getSet() {
+        val box = OptionalBox(null)
+        box.value = 7L
+        assertEquals(7L, box.value)
+        box.value = null
+        assertEquals(null, box.value)
+    }
+
+    @Test
+    fun testOptionalBox_set_present() {
+        val box = OptionalBox(null)
+        box.set(99L)
+        assertEquals(99L, box.get())
+    }
+
+    @Test
+    fun testOptionalBox_set_absent() {
+        val box = OptionalBox(10L)
+        box.set(null)
+        assertEquals(null, box.get())
+    }
+
+    @Test
+    fun testOptionalBox_transform_bothPresent() {
+        val box = OptionalBox(3L)
+        assertEquals(12L, box.transform(4L))
+    }
+
+    @Test
+    fun testOptionalBox_transform_absent() {
+        val box = OptionalBox(3L)
+        assertEquals(null, box.transform(null))
+    }
+
+    @Test
+    fun testOptionalBox_describe_present() {
+        val box = OptionalBox(42L)
+        assertEquals("value=42", box.describe())
+    }
+
+    @Test
+    fun testOptionalBox_describe_absent() {
+        val box = OptionalBox(null)
+        assertEquals(null, box.describe())
+    }
+
+    @Test
+    fun testOptionalBox_parseAndSet_validString() {
+        val box = OptionalBox(null)
+        box.parseAndSet("123")
+        assertEquals(123L, box.get())
+    }
+
+    @Test
+    fun testOptionalBox_parseAndSet_null() {
+        val box = OptionalBox(10L)
+        box.parseAndSet(null)
+        assertEquals(null, box.get())
+    }
+
+    // ByteBuffer: [UInt8] arrays on constructor, property, instance methods, static method.
+
+    @Test
+    fun testByteBuffer_constructor_arrayParam() {
+        val buf = ByteBuffer(ubyteArrayOf(1u, 2u, 3u))
+        assertContentEquals(ubyteArrayOf(1u, 2u, 3u), buf.snapshot())
+    }
+
+    @Test
+    fun testByteBuffer_property_getter() {
+        val buf = ByteBuffer(ubyteArrayOf(10u, 20u))
+        assertContentEquals(ubyteArrayOf(10u, 20u), buf.bytes)
+    }
+
+    @Test
+    fun testByteBuffer_property_setter() {
+        val buf = ByteBuffer(ubyteArrayOf(0u))
+        buf.bytes = ubyteArrayOf(7u, 8u, 9u)
+        assertContentEquals(ubyteArrayOf(7u, 8u, 9u), buf.snapshot())
+    }
+
+    @Test
+    fun testByteBuffer_append_arrayParam() {
+        val buf = ByteBuffer(ubyteArrayOf(1u, 2u))
+        buf.append(ubyteArrayOf(3u, 4u))
+        assertContentEquals(ubyteArrayOf(1u, 2u, 3u, 4u), buf.snapshot())
+    }
+
+    @Test
+    fun testByteBuffer_snapshot_arrayReturn() {
+        val buf = ByteBuffer(ubyteArrayOf(5u, 6u, 7u))
+        assertContentEquals(ubyteArrayOf(5u, 6u, 7u), buf.snapshot())
+    }
+
+    @Test
+    fun testByteBuffer_transform_arrayParamAndReturn() {
+        // storage has 2 elements → shift = 2; each byte += 2
+        val buf = ByteBuffer(ubyteArrayOf(0u, 0u))
+        assertContentEquals(ubyteArrayOf(12u, 22u, 32u), buf.transform(ubyteArrayOf(10u, 20u, 30u)))
+    }
+
+    @Test
+    fun testByteBuffer_zeros_staticArrayReturn() {
+        val bytes = ByteBuffer.zeros(4L)
+        assertEquals(4, bytes.size)
+        assertTrue(bytes.all { it == 0u.toUByte() })
+    }
+
+    // Memory-safety tests. These rely on the Swift-side deinit/init counters
+    // (counterInitCount/counterDeinitCount) and assert *deltas*, so they are
+    // independent of how many Counters other tests created. All Counters here are
+    // closed explicitly (use {} / close()), so the deltas are deterministic and
+    // do not depend on when the GC cleaner runs.
+
+    @Test
+    fun testMemory_destroyRunsExactlyOnceOnClose() {
+        val initsBefore = counterInitCount()
+        val deinitsBefore = counterDeinitCount()
+        Counter(10L).use { it.increment(1L) }
+        // Exactly one construction and one destruction — no leak, no double-free.
+        assertEquals(initsBefore + 1L, counterInitCount())
+        assertEquals(deinitsBefore + 1L, counterDeinitCount())
+    }
+
+    @Test
+    fun testMemory_doubleCloseIsIdempotent() {
+        val before = counterDeinitCount()
+        val c = Counter(5L)
+        c.close()
+        c.close()   // second close must be a no-op (CAS guard), not a double-free
+        assertEquals(before + 1L, counterDeinitCount())
+    }
+
+    @Test
+    fun testMemory_noLeakAcrossManyObjects() {
+        val before = counterDeinitCount()
+        val n = 100
+        for (i in 0 until n) {
+            Counter(i.toLong()).use { it.increment(1L) }
+        }
+        assertEquals(before + n.toLong(), counterDeinitCount())
+    }
+
+    @Test
+    fun testMemory_returnedObjectOutlivesProducerAndSharedIdentity() {
+        val before = counterDeinitCount()
+        val a = Counter(0L)
+        val b = a.selfReference()              // a and b wrap the same Swift object
+        a.increment(7L)
+        assertEquals(7L, b.currentValue())     // shared reference identity
+
+        a.close()
+        assertEquals(before, counterDeinitCount())
+        assertEquals(7L, b.currentValue())     // still valid → not prematurely deleted
+
+        b.close()
+        assertEquals(before + 1L, counterDeinitCount())
+    }
+
+    @Test
+    fun testMemory_returnedFromSwiftOutlivesProducerInSwift() {
+        val before = counterDeinitCount()
+        val c = retainCounterInSwift(5L)
+        assertEquals(before, counterDeinitCount())
+        dropSwiftStrongRef()
+        assertEquals(before, counterDeinitCount())
+        assertEquals(5L, c.currentValue())
+        c.close()
+        assertEquals(before + 1L, counterDeinitCount())
+    }
+
+    @Test
+    fun testMemory_weakRefIsNilledAfterClose() {
+        val c = retainCounterInSwift(5L)
+        storeWeakRef(c)
+        assertTrue(isWeakRefAlive())
+        dropSwiftStrongRef()
+        assertTrue(isWeakRefAlive())
+        assertEquals(5L, c.currentValue())
+        c.close()
+        assertFalse(isWeakRefAlive())
+    }
+
+    @Test
+    fun testMemory_weakRefIsStillAliveIfHasStrongRefInSwift() {
+        val c = retainCounterInSwift(5L)
+        storeWeakRef(c)
+        assertTrue(isWeakRefAlive())
+        c.close()
+        assertTrue(isWeakRefAlive())
+        dropSwiftStrongRef()
+        assertFalse(isWeakRefAlive())
+    }
+
+    // GC-cleaner path tests to test whether the GC can clean up the Swift object
+
+    private fun allocAndDiscard(start: Long) { Counter(start) }
+
+    @Test
+    @OptIn(NativeRuntimeApi::class)
+    fun testMemory_cleanerDestroysSwiftObject() {
+        GC.collect()
+        val deinitsBefore = counterDeinitCount()
+        allocAndDiscard(1L)
+        GC.collect()
+        assertEquals(deinitsBefore + 1L, counterDeinitCount())
+    }
+
+    private fun allocAndClose(start: Long) { Counter(start).close() }
+
+    @Test
+    @OptIn(NativeRuntimeApi::class)
+    fun testMemory_cleanerIsNoOpWhenAlreadyClosed() {
+        GC.collect()
+        val deinitsBefore = counterDeinitCount()
+        allocAndClose(1L)
+        GC.collect()
+        assertEquals(deinitsBefore + 1L, counterDeinitCount())
+    }
+
+    private fun allocAndDiscardN(n: Int) { repeat(n) { Counter(it.toLong()) } }
+
+    @Test
+    @OptIn(NativeRuntimeApi::class)
+    fun testMemory_cleanerHandlesBulkObjects() {
+        GC.collect()
+        val deinitsBefore = counterDeinitCount()
+        val n = 50
+        allocAndDiscardN(n)   // all 50 frames gone on return
+        GC.collect()
+        assertEquals(deinitsBefore + n.toLong(), counterDeinitCount())
+    }
+
+    @Test
+    fun testMemory_structReleasesReferenceMember() {
+        val before = counterDeinitCount()
+        val c = Counter(3L)
+        val h = Holder(c)
+        assertEquals(3L, h.value())
+
+        c.close()
+        // The Holder still owns the Counter, so closing `c` must not free it.
+        assertEquals(before, counterDeinitCount())
+        assertEquals(3L, h.value())            // reachable via the struct → still alive
+
+        h.close()
+        // The struct's _destroy runs `deinitialize`, releasing its `counter`
+        // field — the underlying object is now freed exactly once.
+        assertEquals(before + 1L, counterDeinitCount())
     }
 }

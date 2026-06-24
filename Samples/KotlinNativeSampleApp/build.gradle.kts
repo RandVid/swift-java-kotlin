@@ -117,6 +117,9 @@ kotlin {
     sourceSets {
         val macosArm64Main by getting {
             kotlin.srcDir(generatedKotlinDir)
+            dependencies {
+                implementation(project(":SwiftKitKN"))
+            }
         }
         val macosArm64Test by getting {
             dependencies {

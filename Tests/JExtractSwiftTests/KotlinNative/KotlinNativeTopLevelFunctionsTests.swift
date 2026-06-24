@@ -700,7 +700,7 @@ struct KotlinNativeTopLevelFunctionsTests {
         """
         fun processBytes(data: UByteArray): Unit {
           data.usePinned { pinned_data ->
-            swiftjava_SwiftModule_processBytes_data(pinned_data.addressOf(0), data.size.toLong())
+            swiftjava_SwiftModule_processBytes_data(if (data.size > 0) pinned_data.addressOf(0) else null, data.size.toLong())
           }
         }
         """
@@ -772,7 +772,7 @@ struct KotlinNativeTopLevelFunctionsTests {
         """
         fun sumBytes(data: UByteArray): Long {
           return data.usePinned { pinned_data ->
-            swiftjava_SwiftModule_sumBytes_data(pinned_data.addressOf(0), data.size.toLong())
+            swiftjava_SwiftModule_sumBytes_data(if (data.size > 0) pinned_data.addressOf(0) else null, data.size.toLong())
           }
         }
         """
@@ -790,7 +790,7 @@ struct KotlinNativeTopLevelFunctionsTests {
         """
         fun decodeBytes(data: UByteArray): String {
           return data.usePinned { pinned_data ->
-            val ptr = swiftjava_SwiftModule_decodeBytes_data(pinned_data.addressOf(0), data.size.toLong()) ?: return ""
+            val ptr = swiftjava_SwiftModule_decodeBytes_data(if (data.size > 0) pinned_data.addressOf(0) else null, data.size.toLong()) ?: return ""
             val result = ptr.toKString()
             free(ptr)
             result
@@ -812,7 +812,7 @@ struct KotlinNativeTopLevelFunctionsTests {
         fun combine(lhs: UByteArray, rhs: UByteArray): Long {
           return lhs.usePinned { pinned_lhs ->
             rhs.usePinned { pinned_rhs ->
-              swiftjava_SwiftModule_combine_lhs_rhs(pinned_lhs.addressOf(0), lhs.size.toLong(), pinned_rhs.addressOf(0), rhs.size.toLong())
+              swiftjava_SwiftModule_combine_lhs_rhs(if (lhs.size > 0) pinned_lhs.addressOf(0) else null, lhs.size.toLong(), if (rhs.size > 0) pinned_rhs.addressOf(0) else null, rhs.size.toLong())
             }
           }
         }
@@ -831,7 +831,7 @@ struct KotlinNativeTopLevelFunctionsTests {
         """
         fun writeBuffer(offset: Long, data: UByteArray): Unit {
           data.usePinned { pinned_data ->
-            swiftjava_SwiftModule_writeBuffer_offset_data(offset, pinned_data.addressOf(0), data.size.toLong())
+            swiftjava_SwiftModule_writeBuffer_offset_data(offset, if (data.size > 0) pinned_data.addressOf(0) else null, data.size.toLong())
           }
         }
         """
@@ -899,7 +899,7 @@ struct KotlinNativeTopLevelFunctionsTests {
           return input.usePinned { pinned_input ->
             memScoped {
               val countVar = alloc<LongVar>()
-              val ptr = swiftjava_SwiftModule_transform_input(pinned_input.addressOf(0), input.size.toLong(), countVar.ptr) ?: return UByteArray(0)
+              val ptr = swiftjava_SwiftModule_transform_input(if (input.size > 0) pinned_input.addressOf(0) else null, input.size.toLong(), countVar.ptr) ?: return UByteArray(0)
               val count = countVar.value.convert<Int>()
               val result = ptr.reinterpret<ByteVar>().readBytes(count).asUByteArray()
               free(ptr)
@@ -1300,6 +1300,161 @@ struct KotlinNativeTopLevelFunctionsTests {
             guard let _result: String = maybeUpper(s: s.map { String(cString: $0) }) else { return nil }
             return _swiftjava_stringToCString(_result)
         }
+        """
+      ]
+    )
+  }
+
+  // MARK: - Top-level global variables
+
+  @Test
+  func globalVar_readWrite_kotlin() throws {
+    try assertOutput(
+      input: "public var counter: Int = 0",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        var counter: Long
+            get() {
+                return `swiftjava_SwiftModule_counter$get`()
+            }
+            set(value) {
+                `swiftjava_SwiftModule_counter$set`(value)
+            }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func globalVar_readOnly_kotlin() throws {
+    try assertOutput(
+      input: "public var pi: Double { return 3.14159 }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        val pi: Double
+            get() {
+                return `swiftjava_SwiftModule_pi$get`()
+            }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func globalVar_string_kotlin() throws {
+    try assertOutput(
+      input: "public var greeting: String = \"hello\"",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        var greeting: String
+            get() {
+                val ptr = `swiftjava_SwiftModule_greeting$get`() ?: return ""
+                val result = ptr.toKString()
+                free(ptr)
+                return result
+            }
+            set(value) {
+                `swiftjava_SwiftModule_greeting$set`(value.cstr)
+            }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func globalVar_optionalInt_kotlin() throws {
+    try assertOutput(
+      input: "public var score: Int? = nil",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        var score: Long?
+            get() {
+                val ptr = `swiftjava_SwiftModule_score$get`() ?: return null
+                val result = ptr.pointed.value
+                free(ptr)
+                return result
+            }
+            set(value) {
+                `swiftjava_SwiftModule_score$set`(value?.let { cValuesOf(it) })
+            }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func globalVar_arrayUInt8_kotlin() throws {
+    try assertOutput(
+      input: "public var buffer: [UInt8] = []",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        var buffer: UByteArray
+            get() {
+                memScoped {
+                    val countVar = alloc<LongVar>()
+                    val ptr = `swiftjava_SwiftModule_buffer$get`(countVar.ptr) ?: return UByteArray(0)
+                    val count = countVar.value.convert<Int>()
+                    val result = ptr.reinterpret<ByteVar>().readBytes(count).asUByteArray()
+                    free(ptr)
+                    return result
+                }
+            }
+            set(value) {
+                value.usePinned { pinned_value ->
+                  `swiftjava_SwiftModule_buffer$set`(if (value.size > 0) pinned_value.addressOf(0) else null, value.size.toLong())
+                }
+            }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func globalVar_customObject_kotlin() throws {
+    try assertOutput(
+      input: """
+        public class Box { public init() {} }
+        public var shared: Box = Box()
+        """,
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        var shared: Box
+            get() {
+                val ptr = `swiftjava_SwiftModule_shared$get`()
+                return Box(SwiftHandle(ptr!!, ::swiftjava_SwiftModule_Box_destroy))
+            }
+            set(value) {
+                `swiftjava_SwiftModule_shared$set`(value.__ptr())
+            }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func globalVar_readWrite_swiftThunk() throws {
+    try assertOutput(
+      input: "public var counter: Int = 0",
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_counter$get")
+        """,
+        """
+        @_cdecl("swiftjava_SwiftModule_counter$set")
         """
       ]
     )
