@@ -57,3 +57,15 @@ public func addUInt32(a: UInt32, b: UInt32) -> UInt32 {
 public func addUInt64(a: UInt64, b: UInt64) -> UInt64 {
   return a + b
 }
+
+public func returnUByteArrayFirstElement(arr: [UInt8]) -> UInt8 {
+    return arr[0]
+}
+
+public func returnUByteArray(a: UInt8, b: UInt8, c: UInt8) -> [UInt8] {
+    return [a, b, c]
+}
+
+public func returnUByteArraysFirstElements(arr1: [UInt8], arr2: [UInt8]) -> [UInt8] {
+    return [arr1[0], arr2[0]]
+}

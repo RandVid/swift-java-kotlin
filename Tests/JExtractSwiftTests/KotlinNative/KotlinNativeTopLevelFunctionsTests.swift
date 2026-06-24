@@ -691,6 +691,241 @@ struct KotlinNativeTopLevelFunctionsTests {
     )
   }
 
+  // MARK: - [UInt8] UByteArray parameters
+
+  @Test
+  func byteArray_asParameter_unitReturn() throws {
+    try assertOutput(
+      input: "public func processBytes(data: [UInt8]) {}",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun processBytes(data: UByteArray): Unit {
+          data.usePinned { pinned_data ->
+            swiftjava_SwiftModule_processBytes_data(pinned_data.addressOf(0), data.size.toLong())
+          }
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func byteArray_asParameter_intReturn() throws {
+    try assertOutput(
+      input: "public func sumBytes(data: [UInt8]) -> Int { 0 }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun sumBytes(data: UByteArray): Long {
+          return data.usePinned { pinned_data ->
+            swiftjava_SwiftModule_sumBytes_data(pinned_data.addressOf(0), data.size.toLong())
+          }
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func byteArray_asParameter_stringReturn() throws {
+    try assertOutput(
+      input: "public func decodeBytes(data: [UInt8]) -> String { \"\" }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun decodeBytes(data: UByteArray): String {
+          return data.usePinned { pinned_data ->
+            val ptr = swiftjava_SwiftModule_decodeBytes_data(pinned_data.addressOf(0), data.size.toLong()) ?: return ""
+            val result = ptr.toKString()
+            free(ptr)
+            result
+          }
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func byteArray_multipleArrayParameters() throws {
+    try assertOutput(
+      input: "public func combine(lhs: [UInt8], rhs: [UInt8]) -> Int { 0 }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun combine(lhs: UByteArray, rhs: UByteArray): Long {
+          return lhs.usePinned { pinned_lhs ->
+            rhs.usePinned { pinned_rhs ->
+              swiftjava_SwiftModule_combine_lhs_rhs(pinned_lhs.addressOf(0), lhs.size.toLong(), pinned_rhs.addressOf(0), rhs.size.toLong())
+            }
+          }
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func byteArray_mixedWithPrimitiveParameters() throws {
+    try assertOutput(
+      input: "public func writeBuffer(offset: Int, data: [UInt8]) {}",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun writeBuffer(offset: Long, data: UByteArray): Unit {
+          data.usePinned { pinned_data ->
+            swiftjava_SwiftModule_writeBuffer_offset_data(offset, pinned_data.addressOf(0), data.size.toLong())
+          }
+        }
+        """
+      ]
+    )
+  }
+
+  // MARK: - [UInt8] UByteArray return type
+
+  @Test
+  func byteArray_asReturn_noParams() throws {
+    try assertOutput(
+      input: "public func getData() -> [UInt8] { [] }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun getData(): UByteArray {
+          memScoped {
+            val countVar = alloc<LongVar>()
+            val ptr = swiftjava_SwiftModule_getData(countVar.ptr) ?: return UByteArray(0)
+            val count = countVar.value.convert<Int>()
+            val result = ptr.reinterpret<ByteVar>().readBytes(count).asUByteArray()
+            free(ptr)
+            return result
+          }
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func byteArray_asReturn_withPrimitiveParams() throws {
+    try assertOutput(
+      input: "public func repeatByte(byte: UInt8, count: Int) -> [UInt8] { [] }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun repeatByte(byte: UByte, count: Long): UByteArray {
+          memScoped {
+            val countVar = alloc<LongVar>()
+            val ptr = swiftjava_SwiftModule_repeatByte_byte_count(byte, count, countVar.ptr) ?: return UByteArray(0)
+            val count = countVar.value.convert<Int>()
+            val result = ptr.reinterpret<ByteVar>().readBytes(count).asUByteArray()
+            free(ptr)
+            return result
+          }
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func byteArray_asReturn_withArrayParam() throws {
+    try assertOutput(
+      input: "public func transform(input: [UInt8]) -> [UInt8] { input }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun transform(input: UByteArray): UByteArray {
+          return input.usePinned { pinned_input ->
+            memScoped {
+              val countVar = alloc<LongVar>()
+              val ptr = swiftjava_SwiftModule_transform_input(pinned_input.addressOf(0), input.size.toLong(), countVar.ptr) ?: return UByteArray(0)
+              val count = countVar.value.convert<Int>()
+              val result = ptr.reinterpret<ByteVar>().readBytes(count).asUByteArray()
+              free(ptr)
+              result
+            }
+          }
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func byteArray_asReturn_freeIsImported() throws {
+    try assertOutput(
+      input: "public func getData() -> [UInt8] { [] }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        "import platform.posix.free"
+      ]
+    )
+  }
+
+  // MARK: - Swift thunk generation (.swift render kind)
+
+  @Test
+  func swiftThunk_primitiveReturn() throws {
+    try assertOutput(
+      input: "public func add(a: Int, b: Int) -> Int { 0 }",
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_add_a_b")
+        public func swiftjava_SwiftModule_add_a_b(_ a: Int, _ b: Int) -> Int {
+          return add(a: a, b: b)
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func swiftThunk_byteArrayReturn() throws {
+    try assertOutput(
+      input: "public func getData() -> [UInt8] { [] }",
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_getData")
+        public func swiftjava_SwiftModule_getData(_ result_count: UnsafeMutablePointer<Int>) -> UnsafeMutablePointer<UInt8>? {
+            let _result: [UInt8] = getData()
+            result_count.pointee = _result.count
+            guard !_result.isEmpty else { return nil }
+            let _ptr = UnsafeMutablePointer<UInt8>.allocate(capacity: _result.count)
+        """
+      ]
+    )
+  }
+
+  @Test
+  func swiftThunk_byteArrayParam() throws {
+    try assertOutput(
+      input: "public func process(data: [UInt8]) -> UInt8 { 0 }",
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_process_data")
+        public func swiftjava_SwiftModule_process_data(_ data_pointer: UnsafeRawPointer, _ data_count: Int) -> UInt8 {
+        """
+      ]
+    )
+  }
+
   // MARK: - Unsupported types are skipped
 
   @Test

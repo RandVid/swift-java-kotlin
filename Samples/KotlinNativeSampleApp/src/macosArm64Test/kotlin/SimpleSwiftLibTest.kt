@@ -4,6 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.test.assertContentEquals
 
 // Integration test: Kotlin/Native -> cinterop -> Swift @_cdecl thunk -> real Swift.
 // The generated wrappers live in this same package, so they are callable without
@@ -99,5 +100,12 @@ class SimpleSwiftLibTest {
     fun testAddUInt64() {
         assertEquals(3_000_000_000uL, addUInt64(1_000_000_000uL, 2_000_000_000uL))
         assertEquals(0uL, addUInt64(0uL, 0uL))
+    }
+
+    @Test
+    fun testUByteArray() {
+        assertEquals(1u, returnUByteArrayFirstElement(ubyteArrayOf(1u, 2u, 3u)))
+        assertContentEquals(ubyteArrayOf(4u, 5u, 6u), returnUByteArray(4u, 5u, 6u))
+        assertContentEquals(ubyteArrayOf(1u, 4u), returnUByteArraysFirstElements(ubyteArrayOf(1u, 2u, 3u), ubyteArrayOf(4u, 5u, 6u)))
     }
 }
