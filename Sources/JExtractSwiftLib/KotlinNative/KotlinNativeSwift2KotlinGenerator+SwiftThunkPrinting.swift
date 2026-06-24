@@ -61,86 +61,368 @@ extension KotlinNativeSwift2KotlinGenerator {
     symbolTable.printImportedModules(&printer)
     printer.print("")
 
+    // Top-level functions. The gate mirrors `resolve()` so the thunk file, the C
+    // header, and the Kotlin wrapper emit exactly the same symbol set.
     for decl in analysis.importedGlobalFuncs {
       guard decl.apiKind == .function,
             decl.hasParent == false,
-            decl.isAsync == false else { continue }
+            decl.isAsync == false,
+            decl.isThrowing == false else { continue }
 
       guard swiftTypeToKotlin(decl.functionSignature.result.type) != nil else { continue }
       guard decl.functionSignature.parameters.allSatisfy({ swiftTypeToKotlin($0.type) != nil })
       else { continue }
 
-      let thunkName = thunkNames.functionThunkName(decl: decl)
-
-      do {
-        // CDeclLowering throws for String? params and optional returns; strip both.
-        let wrappedOptionalReturn = extractOptionalWrappedType(decl.functionSignature.result.type)
-        let knownTypes = SwiftKnownTypes(symbolTable: symbolTable)
-        let strippedParameters = decl.functionSignature.parameters.map { p -> SwiftParameter in
-          guard isOptionalString(p.type) else { return p }
-          return SwiftParameter(convention: p.convention, argumentLabel: p.argumentLabel,
-                                parameterName: p.parameterName, type: knownTypes.string)
-        }
-        let strippedResult: SwiftResult
-        if let wrapped = wrappedOptionalReturn {
-          strippedResult = SwiftResult(convention: decl.functionSignature.result.convention, type: wrapped)
-        } else {
-          strippedResult = decl.functionSignature.result
-        }
-        let sigForLowering = SwiftFunctionSignature(
-          selfParameter: decl.functionSignature.selfParameter,
-          parameters: strippedParameters,
-          result: strippedResult,
-          effectSpecifiers: decl.functionSignature.effectSpecifiers,
-          genericParameters: decl.functionSignature.genericParameters,
-          genericRequirements: decl.functionSignature.genericRequirements
-        )
-        let lowered = try CdeclLowering(symbolTable: symbolTable)
-          .lowerFunctionSignature(sigForLowering)
-
-        let resultType = decl.functionSignature.result.type
-        let hasStringOptParams = decl.functionSignature.parameters.contains { isOptionalString($0.type) }
-
-        let knownResult: SwiftKnownType? = {
-          guard case .nominal(let nom) = resultType else { return nil }
-          return nom.asKnownType
-        }()
-
-        let thunkDecl: DeclSyntax
-        if decl.isThrowing {
-          thunkDecl = DeclSyntax(lowered.cdeclThunk(
-            cName: thunkName,
-            swiftAPIName: decl.name,
-            as: decl.apiKind
-          ))
-        } else {
-          switch knownResult {
-          case .array(let element) where isUInt8Type(element):
-            thunkDecl = arrayReturningThunk(lowered: lowered, decl: decl, thunkName: thunkName)
-          case _ where isOptionalString(resultType) || hasStringOptParams:
-            thunkDecl = stringOptionalAwareThunk(
-              lowered: lowered, decl: decl, thunkName: thunkName,
-              wrappedOptionalReturn: wrappedOptionalReturn
-            )
-          case .optional(let wrapped):
-            thunkDecl = optionalReturningThunk(
-              lowered: lowered, decl: decl, thunkName: thunkName, wrappedSwiftType: wrapped
-            )
-          default:
-            thunkDecl = DeclSyntax(lowered.cdeclThunk(
-              cName: thunkName,
-              swiftAPIName: decl.name,
-              as: decl.apiKind
-            ))
-          }
-        }
-
-        printer.print(thunkDecl.description)
+      if let thunk = try? makeThunkDecl(for: decl) {
+        printer.print(thunk.description)
         printer.print("")
-      } catch {
-        continue
       }
     }
+
+    // Top-level global variable accessor thunks.
+    for decl in emittableGlobalVarAccessors {
+      if let thunk = try? makeThunkDecl(for: decl) {
+        printer.print(thunk.description)
+        printer.print("")
+      }
+    }
+
+    // Members of imported nominal types (class / struct): initializers, methods,
+    // static methods, property accessors, and one `_destroy` thunk per type.
+    for typeName in analysis.importedTypes.keys.sorted() {
+      guard let nominal = analysis.importedTypes[typeName] else { continue }
+      switch nominal.swiftNominal.kind {
+      case .class, .struct: break
+      default: continue
+      }
+      let members = nominal.initializers + nominal.methods + nominal.variables
+      for decl in members where memberIsEmittable(decl) {
+        if let thunk = try? makeThunkDecl(for: decl) {
+          printer.print(thunk.description)
+          printer.print("")
+        }
+      }
+      printer.print(destroyThunk(for: nominal).description)
+      printer.print("")
+    }
+  }
+
+  /// Return a copy of `sig` with its result replaced by `Void`. Used when the
+  /// result type requires a custom KN ABI (e.g. `[UInt8]` array) that standard
+  /// `CdeclLowering` cannot lower — stripping the return lets callers verify that
+  /// parameter and `self` lowerability are fine before building a custom CFunction.
+  func signatureWithVoidReturn(_ sig: SwiftFunctionSignature) -> SwiftFunctionSignature {
+    SwiftFunctionSignature(
+      selfParameter: sig.selfParameter,
+      parameters: sig.parameters,
+      result: SwiftResult(convention: .direct, type: .void),
+      effectSpecifiers: sig.effectSpecifiers,
+      genericParameters: sig.genericParameters,
+      genericRequirements: sig.genericRequirements
+    )
+  }
+
+  /// Lower a decl's signature to its `@_cdecl` cdecl form, stripping the parts the
+  /// shared `CdeclLowering` rejects: `String?` parameters (→ `String`) and an
+  /// optional return (→ its wrapped type). Returns the lowered signature plus the
+  /// wrapped optional-return type (nil if the return is not optional). Shared by
+  /// `resolve()` (Kotlin + C header) and `makeThunkDecl` (Swift thunk) so all
+  /// three artifacts lower the same signature.
+  func loweredCdeclForThunk(
+    _ decl: ImportedFunc
+  ) throws -> (lowered: LoweredFunctionSignature, wrappedOptionalReturn: SwiftType?) {
+    let wrappedOptionalReturn = extractOptionalWrappedType(decl.functionSignature.result.type)
+    let knownTypes = SwiftKnownTypes(symbolTable: symbolTable)
+    let strippedParameters = decl.functionSignature.parameters.map { p -> SwiftParameter in
+      guard isOptionalString(p.type) else { return p }
+      return SwiftParameter(convention: p.convention, argumentLabel: p.argumentLabel,
+                            parameterName: p.parameterName, type: knownTypes.string)
+    }
+    let strippedResult: SwiftResult
+    if let wrapped = wrappedOptionalReturn {
+      strippedResult = SwiftResult(convention: decl.functionSignature.result.convention, type: wrapped)
+    } else {
+      strippedResult = decl.functionSignature.result
+    }
+    let sig = SwiftFunctionSignature(
+      selfParameter: decl.functionSignature.selfParameter,
+      parameters: strippedParameters,
+      result: strippedResult,
+      effectSpecifiers: decl.functionSignature.effectSpecifiers,
+      genericParameters: decl.functionSignature.genericParameters,
+      genericRequirements: decl.functionSignature.genericRequirements
+    )
+    let lowered = try CdeclLowering(symbolTable: symbolTable).lowerFunctionSignature(sig)
+    return (lowered, wrappedOptionalReturn)
+  }
+
+  /// Build the C signature for a custom-type (object) return: the thunk returns an
+  /// opaque `void*` box pointer. `self` is appended after the regular parameters
+  /// for instance members (matching the `cdeclThunk` ABI) and omitted for
+  /// top-level functions / initializers / static methods.
+  func objectReturnCFunction(
+    lowered: LoweredFunctionSignature,
+    selfParameter: SwiftSelfParameter?,
+    thunkName: String
+  ) throws -> CFunction {
+    let knownTypes = SwiftKnownTypes(symbolTable: symbolTable)
+    var params = lowered.parameters.flatMap { $0.cdeclParameters }
+    if case .instance = selfParameter {
+      params += lowered.selfParameter?.cdeclParameters ?? []
+    }
+    let sig = SwiftFunctionSignature(
+      selfParameter: nil,
+      parameters: params,
+      result: SwiftResult(convention: .direct, type: knownTypes.unsafeMutableRawPointer),
+      effectSpecifiers: [],
+      genericParameters: [],
+      genericRequirements: []
+    )
+    return try CFunction(cdeclSignature: sig, cName: thunkName)
+  }
+
+  /// Build the `@_cdecl` thunk for one imported function or member, dispatching
+  /// on its return shape. Initializers and any function/method returning a
+  /// custom type use the box-allocating thunk (`nominalAllocatingThunk`); all
+  /// other shapes reuse the existing emitters. `self` (when present) is handled
+  /// by the shared `cdeclThunk` lowering or, for box returns, raised explicitly.
+  func makeThunkDecl(for decl: ImportedFunc) throws -> DeclSyntax {
+    let thunkName = nativeThunkName(decl: decl)
+    let resultType = decl.functionSignature.result.type
+
+    let (lowered, wrappedOptionalReturn) = try loweredCdeclForThunk(decl)
+
+    // Box-allocating thunk for initializers and custom-type returns.
+    if !decl.isThrowing, case .object? = swiftTypeToKotlin(resultType) {
+      return nominalAllocatingThunk(lowered: lowered, decl: decl, thunkName: thunkName)
+    }
+
+    let hasStringOptParams = decl.functionSignature.parameters.contains { isOptionalString($0.type) }
+    let knownResult: SwiftKnownType? = {
+      guard case .nominal(let nom) = resultType else { return nil }
+      return nom.asKnownType
+    }()
+
+    if decl.isThrowing {
+      return DeclSyntax(lowered.cdeclThunk(cName: thunkName, swiftAPIName: decl.name, as: decl.apiKind))
+    }
+    switch knownResult {
+    case .array(let element) where isUInt8Type(element):
+      return arrayReturningThunk(lowered: lowered, decl: decl, thunkName: thunkName)
+    case _ where isOptionalString(resultType) || hasStringOptParams:
+      return stringOptionalAwareThunk(
+        lowered: lowered, decl: decl, thunkName: thunkName,
+        wrappedOptionalReturn: wrappedOptionalReturn
+      )
+    case .optional(let wrapped):
+      return optionalReturningThunk(
+        lowered: lowered, decl: decl, thunkName: thunkName, wrappedSwiftType: wrapped
+      )
+    default:
+      return DeclSyntax(lowered.cdeclThunk(cName: thunkName, swiftAPIName: decl.name, as: decl.apiKind))
+    }
+  }
+
+  /// Emit a box-allocating `@_cdecl` thunk that constructs (init), or calls a
+  /// function/method returning, a custom type — allocates a heap box, moves the
+  /// value in, and returns the opaque pointer. Per `.claude/ClassImpl.md` §5 this
+  /// is uniform for class and struct. `self` (instance methods) is raised via the
+  /// shared lowering conversion and passed after the regular parameters, matching
+  /// the C ABI used by `cdeclThunk`.
+  func nominalAllocatingThunk(
+    lowered: LoweredFunctionSignature,
+    decl: ImportedFunc,
+    thunkName: String
+  ) -> DeclSyntax {
+    let resultType = decl.functionSignature.result.type
+    // The box element type is referenced in Swift source (`UnsafeMutablePointer<…>`),
+    // so use the qualified Swift type name (e.g. `Outer.Box`), not the simple name.
+    let resultName: String = {
+      if case .nominal(let nom) = resultType { return nom.nominalTypeDecl.qualifiedName }
+      return String(describing: resultType)
+    }()
+
+    let isInstance: Bool = {
+      if case .instance = decl.functionSignature.selfParameter { return true }
+      return false
+    }()
+
+    var paramDecls = lowered.parameters.flatMap { $0.cdeclParameters }.map(\.description)
+    if isInstance {
+      paramDecls.append(contentsOf: (lowered.selfParameter?.cdeclParameters ?? []).map(\.description))
+    }
+
+    var thunkFn = try! FunctionDeclSyntax(
+      """
+      @_cdecl(\(literal: thunkName))
+      public func \(raw: thunkName)(\(raw: paramDecls.joined(separator: ", "))) -> UnsafeMutableRawPointer {
+      }
+      """
+    )
+
+    var bodyItems: [CodeBlockItemSyntax] = []
+
+    // Raise the regular arguments from their lowered cdecl parameters.
+    let paramExprs = lowered.parameters.enumerated().map { idx, param in
+      param.conversion.asExprSyntax(
+        placeholder: decl.functionSignature.parameters[idx].parameterName ?? "_\(idx)",
+        bodyItems: &bodyItems
+      )!
+    }
+    let arguments = paramExprs.enumerated().map { (i, expr) -> String in
+      LabeledExprSyntax(
+        label: decl.functionSignature.parameters[i].argumentLabel,
+        expression: expr
+      ).description
+    }.joined(separator: ", ")
+
+    // Build the call expression based on the kind of `self`. A property getter
+    // that returns a custom type is a member access, not a call (no parens/args).
+    let isGetter = decl.apiKind == .getter
+    func access(_ base: String) -> String {
+      isGetter ? "\(base).\(decl.name)" : "\(base).\(decl.name)(\(arguments))"
+    }
+    let callExpr: String
+    switch decl.functionSignature.selfParameter {
+    case .initializer(let selfType):
+      callExpr = "\(selfType.description)(\(arguments))"
+    case .staticMethod(let selfType):
+      callExpr = access(selfType.description)
+    case .instance:
+      let selfExpr = lowered.selfParameter!.conversion.asExprSyntax(
+        placeholder: "self", bodyItems: &bodyItems
+      )!
+      callExpr = access(selfExpr.description)
+    case .none:
+      callExpr = isGetter ? decl.name : "\(decl.name)(\(arguments))"
+    }
+
+    bodyItems.append("let _result = \(raw: callExpr)")
+    bodyItems.append("let _ptr = UnsafeMutablePointer<\(raw: resultName)>.allocate(capacity: 1)")
+    bodyItems.append("_ptr.initialize(to: _result)")
+    bodyItems.append("return UnsafeMutableRawPointer(_ptr)")
+
+    let indented = bodyItems.map { $0.with(\.leadingTrivia, [.newlines(1), .spaces(4)]) }
+    thunkFn.body = CodeBlockSyntax(
+      statements: CodeBlockItemListSyntax(indented),
+      rightBrace: .rightBraceToken(leadingTrivia: .newline)
+    )
+    return DeclSyntax(thunkFn)
+  }
+
+  /// The C declaration for a member thunk, matching the signature `makeThunkDecl`
+  /// emits. Used to populate the cinterop header so every member symbol the Kotlin
+  /// wrapper references is bound. Members never carry String?/optional parameters
+  /// or returns (see `memberIsEmittable`), so no stripping is needed here.
+  func memberCFunction(for decl: ImportedFunc) throws -> CFunction {
+    let thunkName = nativeThunkName(decl: decl)
+    let resultType = decl.functionSignature.result.type
+    let knownTypes = SwiftKnownTypes(symbolTable: symbolTable)
+
+    // [UInt8] array return: custom KN ABI (heap UInt8* + out-count pointer).
+    // Lower with Void return so CdeclLowering doesn't reject the array return type.
+    if case .array(.uByte)? = swiftTypeToKotlin(resultType) {
+      let lowered = try CdeclLowering(symbolTable: symbolTable)
+        .lowerFunctionSignature(signatureWithVoidReturn(decl.functionSignature))
+      var params = lowered.parameters.flatMap { $0.cdeclParameters }
+      params.append(SwiftParameter(
+        convention: .byValue,
+        parameterName: "result_count",
+        type: knownTypes.unsafeMutablePointer(knownTypes.int)
+      ))
+      if case .instance = decl.functionSignature.selfParameter {
+        params += lowered.selfParameter?.cdeclParameters ?? []
+      }
+      let sig = SwiftFunctionSignature(
+        selfParameter: nil,
+        parameters: params,
+        result: SwiftResult(convention: .direct, type: knownTypes.unsafeMutablePointer(knownTypes.uint8)),
+        effectSpecifiers: [],
+        genericParameters: [],
+        genericRequirements: []
+      )
+      return try CFunction(cdeclSignature: sig, cName: thunkName)
+    }
+
+    // Optional return: custom KN ABI (T* for primitives; char* for String?; null = absent).
+    // Use loweredCdeclForThunk to strip String? params and the optional return, then
+    // append self for instance methods — mirroring how resolve() builds optional CFunctions.
+    if case .optional? = swiftTypeToKotlin(resultType), !decl.isThrowing {
+      let (lowered, wrappedOptionalReturn) = try loweredCdeclForThunk(decl)
+      var params = lowered.parameters.flatMap { $0.cdeclParameters }
+      if case .instance = decl.functionSignature.selfParameter {
+        params += lowered.selfParameter?.cdeclParameters ?? []
+      }
+      let resultSwiftType: SwiftType
+      if isOptionalString(resultType) {
+        // String? → char* (heap, null = nil); after stripping, lowered return is char*.
+        resultSwiftType = lowered.cdeclSignature.result.type
+      } else if let wrapped = wrappedOptionalReturn {
+        // Primitive optional → T* (heap-allocated; null = absent).
+        resultSwiftType = knownTypes.optionalSugar(knownTypes.unsafeMutablePointer(wrapped))
+      } else {
+        resultSwiftType = lowered.cdeclSignature.result.type
+      }
+      let sig = SwiftFunctionSignature(
+        selfParameter: nil,
+        parameters: params,
+        result: SwiftResult(convention: .direct, type: resultSwiftType),
+        effectSpecifiers: [],
+        genericParameters: [],
+        genericRequirements: []
+      )
+      return try CFunction(cdeclSignature: sig, cName: thunkName)
+    }
+
+    // Use loweredCdeclForThunk (not raw CdeclLowering) so String? params are
+    // stripped to String before lowering — matching what makeThunkDecl does.
+    let (lowered, _) = try loweredCdeclForThunk(decl)
+
+    if !decl.isThrowing, case .object? = swiftTypeToKotlin(resultType) {
+      return try objectReturnCFunction(
+        lowered: lowered,
+        selfParameter: decl.functionSignature.selfParameter,
+        thunkName: thunkName
+      )
+    }
+
+    return try CFunction(cdeclSignature: lowered.cdeclSignature, cName: thunkName)
+  }
+
+  /// The C declaration for a type's `_destroy` thunk: `void f(void *)`.
+  func destroyCFunction(for nominal: ImportedNominalType) throws -> CFunction {
+    let knownTypes = SwiftKnownTypes(symbolTable: symbolTable)
+    let sig = SwiftFunctionSignature(
+      selfParameter: nil,
+      parameters: [
+        SwiftParameter(convention: .byValue, parameterName: "pointer", type: knownTypes.unsafeMutableRawPointer)
+      ],
+      result: SwiftResult(convention: .direct, type: .void),
+      effectSpecifiers: [],
+      genericParameters: [],
+      genericRequirements: []
+    )
+    return try CFunction(cdeclSignature: sig, cName: destroyThunkName(nominal.swiftNominal.flatName))
+  }
+
+  /// Emit the per-type `_destroy` thunk: run the value's deinit and free the box.
+  /// Uniform for class (ARC release) and struct (release of reference members).
+  func destroyThunk(for nominal: ImportedNominalType) -> DeclSyntax {
+    // C symbol uses the flat name (unique, matches the member thunks); the Swift
+    // type reference uses the qualified name (a valid Swift type expression).
+    let cName = destroyThunkName(nominal.swiftNominal.flatName)
+    let swiftType = nominal.swiftNominal.qualifiedName
+    let fn = try! FunctionDeclSyntax(
+      """
+      @_cdecl(\(literal: cName))
+      public func \(raw: cName)(_ pointer: UnsafeMutableRawPointer) {
+          let typed = pointer.assumingMemoryBound(to: \(raw: swiftType).self)
+          typed.deinitialize(count: 1)
+          typed.deallocate()
+      }
+      """
+    )
+    return DeclSyntax(fn)
   }
 
   /// Return the wrapped `SwiftType` from an optional nominal type, or `nil`.
@@ -173,8 +455,13 @@ extension KotlinNativeSwift2KotlinGenerator {
       typeName = String(describing: wrappedSwiftType)
     }
 
-    let normalParamDecls = lowered.parameters.flatMap { $0.cdeclParameters }.map(\.description)
-    let allParamDecls = normalParamDecls.joined(separator: ", ")
+    let isInstance: Bool = {
+      if case .instance = decl.functionSignature.selfParameter { return true }
+      return false
+    }()
+    var allParamDeclParts = lowered.parameters.flatMap { $0.cdeclParameters }.map(\.description)
+    if isInstance { allParamDeclParts += lowered.selfParameter?.cdeclParameters.map(\.description) ?? [] }
+    let allParamDecls = allParamDeclParts.joined(separator: ", ")
 
     var thunkFn = try! FunctionDeclSyntax(
       """
@@ -186,7 +473,6 @@ extension KotlinNativeSwift2KotlinGenerator {
 
     var bodyItems: [CodeBlockItemSyntax] = []
 
-    // Reconstruct each Swift argument from its lowered cdecl parameters.
     let paramExprs = lowered.parameters.enumerated().map { idx, param in
       param.conversion.asExprSyntax(
         placeholder: decl.functionSignature.parameters[idx].parameterName ?? "_\(idx)",
@@ -201,7 +487,23 @@ extension KotlinNativeSwift2KotlinGenerator {
       ).description
     }.joined(separator: ", ")
 
-    bodyItems.append("guard let _result: \(raw: typeName) = \(raw: decl.name)(\(raw: arguments)) else { return nil }")
+    let isGetter = decl.apiKind == .getter
+    func access(_ base: String) -> String {
+      isGetter ? "\(base).\(decl.name)" : "\(base).\(decl.name)(\(arguments))"
+    }
+    let callExpr: String
+    switch decl.functionSignature.selfParameter {
+    case .instance:
+      let selfExpr = lowered.selfParameter!.conversion.asExprSyntax(
+        placeholder: "self", bodyItems: &bodyItems
+      )!
+      callExpr = access(selfExpr.description)
+    case .staticMethod(let selfType):
+      callExpr = access(selfType.description)
+    default:
+      callExpr = isGetter ? decl.name : "\(decl.name)(\(arguments))"
+    }
+    bodyItems.append("guard let _result: \(raw: typeName) = \(raw: callExpr) else { return nil }")
     bodyItems.append("let _ptr = UnsafeMutablePointer<\(raw: typeName)>.allocate(capacity: 1)")
     bodyItems.append("_ptr.initialize(to: _result)")
     bodyItems.append("return _ptr")
@@ -234,6 +536,10 @@ extension KotlinNativeSwift2KotlinGenerator {
     let isStringOptReturn = isOptionalString(resultType)
     let isVoidReturn = isVoidType(resultType)
 
+    let isInstance: Bool = {
+      if case .instance = decl.functionSignature.selfParameter { return true }
+      return false
+    }()
     // Build cdecl parameter declarations. String? params become UnsafePointer<Int8>?.
     var paramDecls: [String] = []
     for (idx, param) in lowered.parameters.enumerated() {
@@ -245,6 +551,7 @@ extension KotlinNativeSwift2KotlinGenerator {
         paramDecls.append(contentsOf: param.cdeclParameters.map(\.description))
       }
     }
+    if isInstance { paramDecls += lowered.selfParameter?.cdeclParameters.map(\.description) ?? [] }
 
     // Determine the return clause.
     let returnClause: String
@@ -290,23 +597,42 @@ extension KotlinNativeSwift2KotlinGenerator {
       ).description
     }.joined(separator: ", ")
 
+    // Dispatch the call expression on selfParameter — same pattern as arrayReturningThunk.
+    // Property getters are a member access (no parens/args).
+    let isGetter = decl.apiKind == .getter
+    func access(_ base: String) -> String {
+      isGetter ? "\(base).\(decl.name)" : "\(base).\(decl.name)(\(arguments))"
+    }
+    let callExpr: String
+    switch decl.functionSignature.selfParameter {
+    case .instance:
+      let selfExpr = lowered.selfParameter!.conversion.asExprSyntax(
+        placeholder: "self", bodyItems: &bodyItems
+      )!
+      callExpr = access(selfExpr.description)
+    case .staticMethod(let selfType):
+      callExpr = access(selfType.description)
+    default:
+      callExpr = isGetter ? decl.name : "\(decl.name)(\(arguments))"
+    }
+
     // Build body based on return type.
     if isStringOptReturn {
-      bodyItems.append("guard let _result: String = \(raw: decl.name)(\(raw: arguments)) else { return nil }")
+      bodyItems.append("guard let _result: String = \(raw: callExpr) else { return nil }")
       bodyItems.append("return _swiftjava_stringToCString(_result)")
     } else if let wrapped = wrappedOptionalReturn, !isStringType(wrapped),
               case .nominal(let nom) = wrapped {
       let typeName = nom.nominalTypeDecl.name
-      bodyItems.append("guard let _result: \(raw: typeName) = \(raw: decl.name)(\(raw: arguments)) else { return nil }")
+      bodyItems.append("guard let _result: \(raw: typeName) = \(raw: callExpr) else { return nil }")
       bodyItems.append("let _ptr = UnsafeMutablePointer<\(raw: typeName)>.allocate(capacity: 1)")
       bodyItems.append("_ptr.initialize(to: _result)")
       bodyItems.append("return _ptr")
     } else if isStringType(resultType) {
-      bodyItems.append("return _swiftjava_stringToCString(\(raw: decl.name)(\(raw: arguments)))")
+      bodyItems.append("return _swiftjava_stringToCString(\(raw: callExpr))")
     } else if isVoidReturn {
-      bodyItems.append("\(raw: decl.name)(\(raw: arguments))")
+      bodyItems.append("\(raw: callExpr)")
     } else {
-      bodyItems.append("return \(raw: decl.name)(\(raw: arguments))")
+      bodyItems.append("return \(raw: callExpr)")
     }
 
     let indented = bodyItems.map { $0.with(\.leadingTrivia, [.newlines(1), .spaces(4)]) }
@@ -342,8 +668,17 @@ extension KotlinNativeSwift2KotlinGenerator {
     decl: ImportedFunc,
     thunkName: String
   ) -> DeclSyntax {
-    let normalParamDecls = lowered.parameters.flatMap { $0.cdeclParameters }.map(\.description)
-    let allParamDecls = (normalParamDecls + ["_ result_count: UnsafeMutablePointer<Int>"]).joined(separator: ", ")
+    let isInstance: Bool = {
+      if case .instance = decl.functionSignature.selfParameter { return true }
+      return false
+    }()
+
+    var allParamDeclParts = lowered.parameters.flatMap { $0.cdeclParameters }.map(\.description)
+    allParamDeclParts.append("_ result_count: UnsafeMutablePointer<Int>")
+    if isInstance {
+      allParamDeclParts += lowered.selfParameter?.cdeclParameters.map(\.description) ?? []
+    }
+    let allParamDecls = allParamDeclParts.joined(separator: ", ")
 
     var thunkFn = try! FunctionDeclSyntax(
       """
@@ -370,7 +705,27 @@ extension KotlinNativeSwift2KotlinGenerator {
       ).description
     }.joined(separator: ", ")
 
-    bodyItems.append("let _result: [UInt8] = \(raw: decl.name)(\(raw: arguments))")
+    // Build the call expression, dispatching on how `self` is bound.
+    // Property getters are a member access (no parens/args), matching the
+    // pattern in `nominalAllocatingThunk`.
+    let isGetter = decl.apiKind == .getter
+    func access(_ base: String) -> String {
+      isGetter ? "\(base).\(decl.name)" : "\(base).\(decl.name)(\(arguments))"
+    }
+    let callExpr: String
+    switch decl.functionSignature.selfParameter {
+    case .instance:
+      let selfExpr = lowered.selfParameter!.conversion.asExprSyntax(
+        placeholder: "self", bodyItems: &bodyItems
+      )!
+      callExpr = access(selfExpr.description)
+    case .staticMethod(let selfType):
+      callExpr = access(selfType.description)
+    default:
+      callExpr = isGetter ? decl.name : "\(decl.name)(\(arguments))"
+    }
+
+    bodyItems.append("let _result: [UInt8] = \(raw: callExpr)")
     bodyItems.append("result_count.pointee = _result.count")
     bodyItems.append("guard !_result.isEmpty else { return nil }")
     bodyItems.append("let _ptr = UnsafeMutablePointer<UInt8>.allocate(capacity: _result.count)")

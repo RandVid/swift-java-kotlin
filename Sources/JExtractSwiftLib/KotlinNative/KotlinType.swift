@@ -31,6 +31,9 @@ package indirect enum KotlinType: Equatable {
   case array(KotlinType)
   // Nullable (Kotlin nullable type `T?`)
   case optional(KotlinType)
+  // A generated wrapper class for a Swift nominal type (class or struct).
+  // The associated value is the Kotlin wrapper class name (e.g. "Counter").
+  case object(String)
 }
 
 extension KotlinType: CustomStringConvertible {
@@ -55,6 +58,7 @@ extension KotlinType: CustomStringConvertible {
       default:     return "Array<\(el)>"
       }
     case .optional(let inner): return "\(inner)?"
+    case .object(let name):    return name
     }
   }
 }
