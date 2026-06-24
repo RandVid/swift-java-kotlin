@@ -69,3 +69,61 @@ public func returnUByteArray(a: UInt8, b: UInt8, c: UInt8) -> [UInt8] {
 public func returnUByteArraysFirstElements(arr1: [UInt8], arr2: [UInt8]) -> [UInt8] {
     return [arr1[0], arr2[0]]
 }
+
+// Optional parameter functions
+public func addIfPresent(a: Int, b: Int?) -> Int {
+    return a + (b ?? 0)
+}
+
+public func sumOptionals(a: Int?, b: Int?) -> Int {
+    return (a ?? 0) + (b ?? 0)
+}
+
+public func scaleIfPresent(value: Double, factor: Double?) -> Double {
+    return value * (factor ?? 1.0)
+}
+
+public func absOptUByte(b: UInt8?) -> UInt8 {
+    return b ?? 0
+}
+
+// Optional return functions
+public func maybePositive(x: Int) -> Int? {
+    return x > 0 ? x : nil
+}
+
+public func maybeDouble(x: Double) -> Double? {
+    return x != 0.0 ? x : nil
+}
+
+public func maybeInt32(x: Int32) -> Int32? {
+    return x != 0 ? x : nil
+}
+
+public func maybeUByte(x: UInt8) -> UInt8? {
+    return x != 0 ? x : nil
+}
+
+// Optional parameter with optional return
+public func doubleIfPresent(x: Int?) -> Int? {
+    guard let x else { return nil }
+    return x * 2
+}
+
+// Optional String parameters
+public func greetIfPresent(name: String?) -> String {
+    guard let name else { return "Hello, stranger!" }
+    return "Hello, \(name)!"
+}
+
+// Optional String return
+public func initials(fullName: String) -> String? {
+    let parts = fullName.split(separator: " ").map(String.init)
+    guard parts.count >= 2 else { return nil }
+    return parts.map { String($0.prefix(1)) }.joined(separator: ".")
+}
+
+// Optional String param + optional String return
+public func maybeUpper(s: String?) -> String? {
+    return s?.uppercased()
+}

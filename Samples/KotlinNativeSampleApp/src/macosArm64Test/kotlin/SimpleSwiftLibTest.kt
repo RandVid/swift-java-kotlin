@@ -108,4 +108,136 @@ class SimpleSwiftLibTest {
         assertContentEquals(ubyteArrayOf(4u, 5u, 6u), returnUByteArray(4u, 5u, 6u))
         assertContentEquals(ubyteArrayOf(1u, 4u), returnUByteArraysFirstElements(ubyteArrayOf(1u, 2u, 3u), ubyteArrayOf(4u, 5u, 6u)))
     }
+
+    // Optional parameters
+
+    @Test
+    fun testOptionalIntParam_present() {
+        assertEquals(7L, addIfPresent(3L, 4L))
+    }
+
+    @Test
+    fun testOptionalIntParam_absent() {
+        assertEquals(3L, addIfPresent(3L, null))
+    }
+
+    @Test
+    fun testOptionalIntParams_bothPresent() {
+        assertEquals(9L, sumOptionals(4L, 5L))
+    }
+
+    @Test
+    fun testOptionalIntParams_bothAbsent() {
+        assertEquals(0L, sumOptionals(null, null))
+    }
+
+    @Test
+    fun testOptionalDoubleParam_present() {
+        assertEquals(6.0, scaleIfPresent(2.0, 3.0))
+    }
+
+    @Test
+    fun testOptionalDoubleParam_absent() {
+        assertEquals(2.0, scaleIfPresent(2.0, null))
+    }
+
+    @Test
+    fun testOptionalUByteParam_present() {
+        assertEquals(42u.toUByte(), absOptUByte(42u))
+    }
+
+    @Test
+    fun testOptionalUByteParam_absent() {
+        assertEquals(0u.toUByte(), absOptUByte(null))
+    }
+
+    // Optional returns
+
+    @Test
+    fun testOptionalIntReturn_present() {
+        assertEquals(5L, maybePositive(5L))
+    }
+
+    @Test
+    fun testOptionalIntReturn_absent() {
+        assertEquals(null, maybePositive(-1L))
+    }
+
+    @Test
+    fun testOptionalDoubleReturn_present() {
+        assertEquals(3.14, maybeDouble(3.14))
+    }
+
+    @Test
+    fun testOptionalDoubleReturn_absent() {
+        assertEquals(null, maybeDouble(0.0))
+    }
+
+    @Test
+    fun testOptionalInt32Return_present() {
+        assertEquals(42, maybeInt32(42))
+    }
+
+    @Test
+    fun testOptionalInt32Return_absent() {
+        assertEquals(null, maybeInt32(0))
+    }
+
+    @Test
+    fun testOptionalUByteReturn_present() {
+        assertEquals(7u.toUByte(), maybeUByte(7u))
+    }
+
+    @Test
+    fun testOptionalUByteReturn_absent() {
+        assertEquals(null, maybeUByte(0u))
+    }
+
+    // Optional parameter with optional return
+
+    @Test
+    fun testOptionalParamAndReturn_present() {
+        assertEquals(8L, doubleIfPresent(4L))
+    }
+
+    @Test
+    fun testOptionalParamAndReturn_absent() {
+        assertEquals(null, doubleIfPresent(null))
+    }
+
+    // Optional String parameter
+
+    @Test
+    fun testOptionalStringParam_present() {
+        assertEquals("Hello, Alice!", greetIfPresent("Alice"))
+    }
+
+    @Test
+    fun testOptionalStringParam_absent() {
+        assertEquals("Hello, stranger!", greetIfPresent(null))
+    }
+
+    // Optional String return
+
+    @Test
+    fun testOptionalStringReturn_present() {
+        assertEquals("J.D", initials("John Doe"))
+    }
+
+    @Test
+    fun testOptionalStringReturn_absent() {
+        assertEquals(null, initials("Cher"))
+    }
+
+    // Optional String param + optional String return
+
+    @Test
+    fun testOptionalStringParamAndReturn_present() {
+        assertEquals("HELLO", maybeUpper("hello"))
+    }
+
+    @Test
+    fun testOptionalStringParamAndReturn_absent() {
+        assertEquals(null, maybeUpper(null))
+    }
 }

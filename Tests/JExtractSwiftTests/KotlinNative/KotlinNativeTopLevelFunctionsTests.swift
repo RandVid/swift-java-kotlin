@@ -340,9 +340,6 @@ struct KotlinNativeTopLevelFunctionsTests {
       .java,
       expectedChunks: [
         "fun add(a: Long, b: Long): Long {"
-      ],
-      notExpectedChunks: [
-        "import platform.posix.free"
       ]
     )
   }
@@ -711,6 +708,60 @@ struct KotlinNativeTopLevelFunctionsTests {
     )
   }
 
+  // MARK: - Optional String parameters
+
+  @Test
+  func optional_stringParam() throws {
+    try assertOutput(
+      input: "public func acceptOptString(s: String?) {}",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun acceptOptString(s: String?): Unit {
+          swiftjava_SwiftModule_acceptOptString_s(s?.cstr)
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func optional_stringParam_swiftThunk() throws {
+    try assertOutput(
+      input: "public func acceptOptString(s: String?) {}",
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_acceptOptString_s")
+        public func swiftjava_SwiftModule_acceptOptString_s(_ s: UnsafePointer<Int8>?) {
+            acceptOptString(s: s.map { String(cString: $0) })
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func optional_stringParam_withStringReturn() throws {
+    try assertOutput(
+      input: "public func greetOpt(name: String?) -> String { name ?? \"stranger\" }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun greetOpt(name: String?): String {
+          val ptr = swiftjava_SwiftModule_greetOpt_name(name?.cstr) ?: return ""
+          val result = ptr.toKString()
+          free(ptr)
+          return result
+        }
+        """
+      ]
+    )
+  }
+
   @Test
   func byteArray_asParameter_intReturn() throws {
     try assertOutput(
@@ -926,6 +977,213 @@ struct KotlinNativeTopLevelFunctionsTests {
     )
   }
 
+  // MARK: - Optional parameters (Phase 1)
+
+  @Test
+  func optional_intParam() throws {
+    try assertOutput(
+      input: "public func acceptOpt(x: Int?) {}",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun acceptOpt(x: Long?): Unit {
+          swiftjava_SwiftModule_acceptOpt_x(x?.let { cValuesOf(it) })
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func optional_intParam_swiftThunk() throws {
+    try assertOutput(
+      input: "public func acceptOpt(x: Int?) {}",
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_acceptOpt_x")
+        public func swiftjava_SwiftModule_acceptOpt_x(_ x: UnsafePointer<Int>?) {
+        """
+      ]
+    )
+  }
+
+  @Test
+  func optional_uByteParam() throws {
+    try assertOutput(
+      input: "public func acceptOptByte(b: UInt8?) {}",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun acceptOptByte(b: UByte?): Unit {
+          swiftjava_SwiftModule_acceptOptByte_b(b?.let { ubyteArrayOf(it).refTo(0) })
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func optional_boolParam() throws {
+    try assertOutput(
+      input: "public func acceptOptBool(flag: Bool?) {}",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun acceptOptBool(flag: Boolean?): Unit {
+          swiftjava_SwiftModule_acceptOptBool_flag(flag?.let { booleanArrayOf(it).refTo(0) })
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func optional_intParam_withPrimitiveReturn() throws {
+    try assertOutput(
+      input: "public func withOpt(x: Int?, y: Int) -> Int { (x ?? 0) + y }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun withOpt(x: Long?, y: Long): Long {
+          return swiftjava_SwiftModule_withOpt_x_y(x?.let { cValuesOf(it) }, y)
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func optional_multipleOptionalParams() throws {
+    try assertOutput(
+      input: "public func maybeAdd(a: Int?, b: Int32?) -> Int { 0 }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun maybeAdd(a: Long?, b: Int?): Long {
+          return swiftjava_SwiftModule_maybeAdd_a_b(a?.let { cValuesOf(it) }, b?.let { cValuesOf(it) })
+        }
+        """
+      ]
+    )
+  }
+
+  // MARK: - Optional returns (Phase 2)
+
+  @Test
+  func optional_intReturn() throws {
+    try assertOutput(
+      input: "public func maybeInt() -> Int? { nil }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun maybeInt(): Long? {
+          val ptr = swiftjava_SwiftModule_maybeInt() ?: return null
+          val result = ptr.pointed.value
+          free(ptr)
+          return result
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func optional_intReturn_importsFree() throws {
+    try assertOutput(
+      input: "public func maybeInt() -> Int? { nil }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        "import platform.posix.free"
+      ]
+    )
+  }
+
+  @Test
+  func optional_doubleReturn() throws {
+    try assertOutput(
+      input: "public func maybeDouble() -> Double? { nil }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun maybeDouble(): Double? {
+          val ptr = swiftjava_SwiftModule_maybeDouble() ?: return null
+          val result = ptr.pointed.value
+          free(ptr)
+          return result
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func optional_int32Return() throws {
+    try assertOutput(
+      input: "public func maybeInt32() -> Int32? { nil }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun maybeInt32(): Int? {
+          val ptr = swiftjava_SwiftModule_maybeInt32() ?: return null
+          val result = ptr.pointed.value
+          free(ptr)
+          return result
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func optional_intReturn_swiftThunk() throws {
+    try assertOutput(
+      input: "public func maybeInt() -> Int? { nil }",
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_maybeInt")
+        public func swiftjava_SwiftModule_maybeInt() -> UnsafeMutablePointer<Int>? {
+            guard let _result: Int = maybeInt() else { return nil }
+            let _ptr = UnsafeMutablePointer<Int>.allocate(capacity: 1)
+            _ptr.initialize(to: _result)
+            return _ptr
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func optional_paramAndReturn() throws {
+    try assertOutput(
+      input: "public func doubleOpt(x: Int?) -> Int? { x }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun doubleOpt(x: Long?): Long? {
+          val ptr = swiftjava_SwiftModule_doubleOpt_x(x?.let { cValuesOf(it) }) ?: return null
+          val result = ptr.pointed.value
+          free(ptr)
+          return result
+        }
+        """
+      ]
+    )
+  }
+
   // MARK: - Unsupported types are skipped
 
   @Test
@@ -941,13 +1199,108 @@ struct KotlinNativeTopLevelFunctionsTests {
   }
 
   @Test
-  func unsupported_optionalReturn_isSkipped() throws {
+  func optional_stringParam_withStringReturn_swiftThunk() throws {
     try assertOutput(
-      input: "public func maybeInt() -> Int? { nil }",
+      input: "public func greetOpt(name: String?) -> String { name ?? \"stranger\" }",
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_greetOpt_name")
+        public func swiftjava_SwiftModule_greetOpt_name(_ name: UnsafePointer<Int8>?) -> UnsafeMutablePointer<Int8> {
+            return _swiftjava_stringToCString(greetOpt(name: name.map { String(cString: $0) }))
+        }
+        """
+      ]
+    )
+  }
+
+  // MARK: - Optional String returns
+
+  @Test
+  func optional_stringReturn() throws {
+    try assertOutput(
+      input: "public func maybeName() -> String? { nil }",
       .kotlinNative,
       .java,
       expectedChunks: [
-        "// Skipped maybeInt: unsupported return type"
+        """
+        fun maybeName(): String? {
+          val ptr = swiftjava_SwiftModule_maybeName() ?: return null
+          val result = ptr.toKString()
+          free(ptr)
+          return result
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func optional_stringReturn_swiftThunk() throws {
+    try assertOutput(
+      input: "public func maybeName() -> String? { nil }",
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_maybeName")
+        public func swiftjava_SwiftModule_maybeName() -> UnsafeMutablePointer<CChar>? {
+            guard let _result: String = maybeName() else { return nil }
+            return _swiftjava_stringToCString(_result)
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func optional_stringReturn_importsFree() throws {
+    try assertOutput(
+      input: "public func maybeName() -> String? { nil }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        "import platform.posix.free"
+      ]
+    )
+  }
+
+  // MARK: - Optional String param + Optional String return combined
+
+  @Test
+  func optional_stringParamAndReturn() throws {
+    try assertOutput(
+      input: "public func maybeUpper(s: String?) -> String? { s?.uppercased() }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun maybeUpper(s: String?): String? {
+          val ptr = swiftjava_SwiftModule_maybeUpper_s(s?.cstr) ?: return null
+          val result = ptr.toKString()
+          free(ptr)
+          return result
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func optional_stringParamAndReturn_swiftThunk() throws {
+    try assertOutput(
+      input: "public func maybeUpper(s: String?) -> String? { s?.uppercased() }",
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_maybeUpper_s")
+        public func swiftjava_SwiftModule_maybeUpper_s(_ s: UnsafePointer<Int8>?) -> UnsafeMutablePointer<CChar>? {
+            guard let _result: String = maybeUpper(s: s.map { String(cString: $0) }) else { return nil }
+            return _swiftjava_stringToCString(_result)
+        }
+        """
       ]
     )
   }

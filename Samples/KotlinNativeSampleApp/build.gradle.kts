@@ -56,6 +56,9 @@ val generateKotlinNativeBindings = tasks.register<Exec>("generateKotlinNativeBin
         "--mode", "kotlinNative"
     )
     inputs.dir("Sources/SimpleSwiftLib")
+    // Re-run generation when the swift-java tool itself changes, otherwise Gradle
+    // treats the task as up-to-date and reuses stale wrappers after a tool rebuild.
+    inputs.file(swiftJavaTool)
     outputs.dir(generatedKotlinDir)
     outputs.dir(generatedHeaderDir)
     dependsOn(buildRootProject)
