@@ -29,6 +29,8 @@ package indirect enum KotlinType: Equatable {
   case unit
   // Generic
   case array(KotlinType)
+  // Nullable (Kotlin nullable type `T?`)
+  case optional(KotlinType)
 }
 
 extension KotlinType: CustomStringConvertible {
@@ -52,6 +54,7 @@ extension KotlinType: CustomStringConvertible {
       case .uByte: return "UByteArray"
       default:     return "Array<\(el)>"
       }
+    case .optional(let inner): return "\(inner)?"
     }
   }
 }

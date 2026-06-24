@@ -174,6 +174,15 @@ package class KotlinNativeSwift2KotlinGenerator {
         callArgs.append("\(pinnedName).addressOf(0)")
         callArgs.append("\(name).size.toLong()")
         usesCInterop = true
+      case .optional(.string):
+        // String? is passed as a nullable null-terminated C string pointer.
+        callArgs.append("\(name)?.cstr")
+        usesCInterop = true
+      case .optional(let inner):
+        // The C thunk takes UnsafePointer<T>? (null = absent). Pass a single-
+        // element array reference (lifetime tied to the call frame) or null.
+        callArgs.append("\(name)?.let { \(callArgForOptional(inner, value: "it")) }")
+        usesCInterop = true
       default:
         callArgs.append(name)
       }
@@ -189,11 +198,36 @@ package class KotlinNativeSwift2KotlinGenerator {
     // lowering, then render the C declaration. For `[UInt8]` returns we use a
     // KN-specific ABI (`uint8_t* thunk(..., ptrdiff_t* result_count)`) because
     // the FFM callback ABI is incompatible with Kotlin/Native's staticCFunction.
+    // For optional returns the shared CDeclLowering does not support optional return
+    // types; we lower a stripped (non-optional) signature so parameters are still
+    // correctly processed, then build the custom CFunction manually.
     let thunkName = thunkNames.functionThunkName(decl: decl)
     let cFunction: CFunction
+    let optionalReturnWrapped = extractOptionalWrappedType(decl.functionSignature.result.type)
+    // CDeclLowering throws for String? params and optional returns — strip both before lowering.
+    let knownTypes = SwiftKnownTypes(symbolTable: symbolTable)
+    let strippedParameters = decl.functionSignature.parameters.map { p -> SwiftParameter in
+      guard swiftTypeToKotlin(p.type) == .optional(.string) else { return p }
+      return SwiftParameter(convention: p.convention, argumentLabel: p.argumentLabel,
+                            parameterName: p.parameterName, type: knownTypes.string)
+    }
+    let strippedResult: SwiftResult
+    if let wrapped = optionalReturnWrapped, case .optional = ktReturn {
+      strippedResult = SwiftResult(convention: decl.functionSignature.result.convention, type: wrapped)
+    } else {
+      strippedResult = decl.functionSignature.result
+    }
+    let sigForLowering = SwiftFunctionSignature(
+      selfParameter: decl.functionSignature.selfParameter,
+      parameters: strippedParameters,
+      result: strippedResult,
+      effectSpecifiers: decl.functionSignature.effectSpecifiers,
+      genericParameters: decl.functionSignature.genericParameters,
+      genericRequirements: decl.functionSignature.genericRequirements
+    )
     do {
       let lowered = try CdeclLowering(symbolTable: symbolTable)
-        .lowerFunctionSignature(decl.functionSignature)
+        .lowerFunctionSignature(sigForLowering)
       switch ktReturn {
       case .array(.uByte):
         // Append the out-count arg that the Kotlin wrapper will pass via memScoped.
@@ -209,6 +243,30 @@ package class KotlinNativeSwift2KotlinGenerator {
           selfParameter: nil,
           parameters: normalParams + [countParam],
           result: SwiftResult(convention: .direct, type: knownTypes.unsafeMutablePointer(knownTypes.uint8)),
+          effectSpecifiers: [],
+          genericParameters: [],
+          genericRequirements: []
+        )
+        cFunction = try CFunction(cdeclSignature: customSig, cName: thunkName)
+      case .optional(.string):
+        // String? uses same C ABI as non-optional String: heap-allocated int8_t*, null = nil.
+        // The stripped-signature lowering already produces the correct int8_t* return type.
+        cFunction = try CFunction(cdeclSignature: lowered.cdeclSignature, cName: thunkName)
+      case .optional:
+        // KN-specific ABI: thunk returns UnsafeMutablePointer<T>? (heap-allocated,
+        // null = absent). CType treats optional(pointer) as the pointer itself
+        // (CRepresentation.swift:34), so the C header gets `T*` (nullable by convention).
+        guard let wrappedSwiftType = optionalReturnWrapped else {
+          return skip("optional return type not extractable")
+        }
+        let normalParams = lowered.parameters.flatMap { $0.cdeclParameters }
+        let customSig = SwiftFunctionSignature(
+          selfParameter: nil,
+          parameters: normalParams,
+          result: SwiftResult(
+            convention: .direct,
+            type: knownTypes.optionalSugar(knownTypes.unsafeMutablePointer(wrappedSwiftType))
+          ),
           effectSpecifiers: [],
           genericParameters: [],
           genericRequirements: []
@@ -254,18 +312,7 @@ package class KotlinNativeSwift2KotlinGenerator {
     printer.print("import \(cinteropPackage).*")
 
     printer.print("import kotlinx.cinterop.*")
-    // `free` is needed to release heap-allocated pointers returned by
-    // String- and [UInt8]-returning thunks; it is NOT in kotlinx.cinterop.
-    let needsFree = resolvedFunctions().contains {
-      if case .emit(let fn) = $0 {
-        return fn.kotlinReturn == .string || fn.kotlinReturn == .array(.uByte)
-      }
-      return false
-    }
-    if needsFree {
-      printer.print("import platform.posix.free")
-    }
-    printer.print("")
+    printer.print("import platform.posix.free")
 
     for resolved in resolvedFunctions() {
       switch resolved {
@@ -298,11 +345,20 @@ package class KotlinNativeSwift2KotlinGenerator {
     switch fn.kotlinReturn {
     case .unit:
       printer.print("\(indent)\(fn.thunkName)(\(argsString))")
-    case .string:
-      // `return ""` is a non-local return from the enclosing named function,
+    case .string, .optional(.string):
+      // `return "" / null` is a non-local return from the enclosing named function,
       // which is valid because usePinned is an inline function.
-      printer.print("\(indent)val ptr = \(fn.thunkName)(\(argsString)) ?: return \"\"")
+      let nilReturn = (fn.kotlinReturn == .string) ? "\"\"" : "null"
+      printer.print("\(indent)val ptr = \(fn.thunkName)(\(argsString)) ?: return \(nilReturn)")
       printer.print("\(indent)val result = ptr.toKString()")
+      printer.print("\(indent)free(ptr)")
+      printer.print("\(indent)\(returnPrefix)result")
+    case .optional:
+      // The thunk returns a heap-allocated T* (null = absent). Dereference,
+      // copy the value, then free the pointer. `return null` / `return result`
+      // are non-local returns valid through any enclosing inline lambda.
+      printer.print("\(indent)val ptr = \(fn.thunkName)(\(argsString)) ?: return null")
+      printer.print("\(indent)val result = ptr.pointed.value")
       printer.print("\(indent)free(ptr)")
       printer.print("\(indent)\(returnPrefix)result")
     case .array(.uByte):
@@ -393,6 +449,14 @@ package class KotlinNativeSwift2KotlinGenerator {
             return .array(.uByte)
           }
           return nil
+        case .optional(let wrapped):
+          guard let inner = swiftTypeToKotlin(wrapped) else { return nil }
+          switch inner {
+          case .long, .int, .short, .byte, .uLong, .uInt, .uShort, .uByte,
+               .boolean, .float, .double, .string:
+            return .optional(inner)
+          default: return nil  // Optional<Array>, nested Optional not supported
+          }
         default: break
         }
     }
@@ -415,6 +479,24 @@ package class KotlinNativeSwift2KotlinGenerator {
     case "Void",   "Swift.Void", "()": return .unit
     case "[UInt8]", "[Swift.UInt8]": return .array(.uByte)
     default: return nil
+    }
+  }
+
+  /// Build the call-site expression that turns a non-null Kotlin nullable value
+  /// into a C pointer for an optional parameter. For signed/float types, uses
+  /// `cValuesOf(value)` which infers the Var type automatically. For unsigned
+  /// types and Boolean, uses a single-element array with `refTo(0)` — also
+  /// type-inferred, requiring no explicit Var name.
+  func callArgForOptional(_ inner: KotlinType, value: String) -> String {
+    switch inner {
+    case .long, .int, .short, .byte, .float, .double:
+      return "cValuesOf(\(value))"
+    case .uLong:  return "ulongArrayOf(\(value)).refTo(0)"
+    case .uInt:   return "uintArrayOf(\(value)).refTo(0)"
+    case .uShort: return "ushortArrayOf(\(value)).refTo(0)"
+    case .uByte:  return "ubyteArrayOf(\(value)).refTo(0)"
+    case .boolean: return "booleanArrayOf(\(value)).refTo(0)"
+    default: return "cValuesOf(\(value))"
     }
   }
 
