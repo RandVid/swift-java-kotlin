@@ -32,11 +32,16 @@ import Foundation
 
 package class KotlinNativeSwift2KotlinGenerator {
   let log: Logger
+  let config: Configuration
   let analysis: AnalysisResult
   let swiftModuleName: String
   let kotlinPackage: String
   let kotlinOutputDirectory: String
   let cinteropHeaderDirectory: String
+
+  /// Source file paths registered with the translator; used to derive the
+  /// expected SwiftPM plugin output file names for `--write-empty-files`.
+  let translatorInputs: [SwiftJavaInputFile]
 
   /// Symbol table used to lower Swift signatures to their `@_cdecl` C form
   /// (e.g. `String` parameter -> `UnsafePointer<Int8>`).
@@ -58,8 +63,9 @@ package class KotlinNativeSwift2KotlinGenerator {
     let kotlinParams: [String]   // e.g. ["a: Long", "b: Long"]
     let kotlinReturn: KotlinType // e.g. .long
     /// Arguments passed to the thunk, with per-parameter conversion applied
-    /// (primitives pass through; `String` becomes `name.cstr`).
-    let callArgs: [String]       // e.g. ["a", "b"] or ["message.cstr"]
+    /// (primitives pass through; `String` becomes `name.cstr`;
+    ///  `[UInt8]` expands to `pinned_name.addressOf(0), name.size.toLong()`).
+    let callArgs: [String]
     let isThrowing: Bool
     /// True if any argument needs a `kotlinx.cinterop` conversion (e.g. `.cstr`).
     let usesCInterop: Bool
@@ -67,6 +73,16 @@ package class KotlinNativeSwift2KotlinGenerator {
     /// machinery — the same lowering that produces FFM's Java FunctionDescriptor,
     /// so the C ABI has a single source of truth across modes.
     let cFunction: CFunction
+    /// One entry per parameter that must be pinned before calling the thunk.
+    /// Non-empty means `printKotlinFunction` wraps the call in nested
+    /// `usePinned { }` blocks.
+    let pinnings: [Pinning]
+
+    /// Describes a parameter that needs `usePinned` at the call site.
+    struct Pinning {
+      let paramName: String    // e.g. "data"
+      let pinnedName: String   // e.g. "pinned_data"
+    }
   }
 
   /// Outcome of resolving one imported function: either an emittable
@@ -86,11 +102,13 @@ package class KotlinNativeSwift2KotlinGenerator {
                kotlinPackage: String, kotlinOutputDirectory: String,
                cinteropHeaderDirectory: String) {
     self.log = Logger(label: "kotlin-native-generator", logLevel: translator.log.logLevel)
+    self.config = config
     self.analysis = translator.result               // same IR as FFM / Kotlin-JVM generators
     self.swiftModuleName = translator.swiftModuleName
     self.kotlinPackage = kotlinPackage
     self.kotlinOutputDirectory = kotlinOutputDirectory
     self.cinteropHeaderDirectory = cinteropHeaderDirectory
+    self.translatorInputs = translator.inputs
     self.symbolTable = translator.symbolTable
     self.thunkNames = ThunkNameRegistry()
   }
@@ -101,6 +119,9 @@ package class KotlinNativeSwift2KotlinGenerator {
 
     var headerPrinter = CodePrinter()
     try writeCinteropHeader(printer: &headerPrinter)
+
+    try writeSwiftThunkSourcesToDisk()
+    try writeExpectedEmptySwiftSources()
   }
 
   // MARK: - Resolution (single source of truth for both artifacts)
@@ -125,11 +146,13 @@ package class KotlinNativeSwift2KotlinGenerator {
     guard decl.hasParent == false else { return skip("not a top-level function (has parent)") }
     guard decl.isAsync == false else { return skip("async not supported in kotlinNative mode") }
 
-    // Kotlin-side scope gate. Supported parameter types: Int/Int32/Bool/Double
-    // and String (passed as a null-terminated UTF-8 C string via `.cstr`).
+    // Kotlin-side scope gate. Supported parameter types: Int/Int32/Bool/Double,
+    // String (passed as a null-terminated UTF-8 C string via `.cstr`), and
+    // [UInt8] (passed as a pinned ByteArray pointer + count pair).
     var kotlinParams: [String] = []
     var callArgs: [String] = []
     var usesCInterop = false
+    var pinnings: [NativeFunc.Pinning] = []
     for (i, p) in decl.functionSignature.parameters.enumerated() {
       guard let ktTy = swiftTypeToKotlin(p.type) else {
         return skip("unsupported param type '\(p.type)'")
@@ -143,30 +166,57 @@ package class KotlinNativeSwift2KotlinGenerator {
         // the duration of the call.
         callArgs.append("\(name).cstr")
         usesCInterop = true
+      case .array:
+        // [UInt8] is lowered to (pointer, count) in the C thunk. Pin the
+        // ByteArray and pass the base address + length.
+        let pinnedName = "pinned_\(name)"
+        pinnings.append(NativeFunc.Pinning(paramName: name, pinnedName: pinnedName))
+        callArgs.append("\(pinnedName).addressOf(0)")
+        callArgs.append("\(name).size.toLong()")
+        usesCInterop = true
       default:
-          callArgs.append(name)
+        callArgs.append(name)
       }
     }
 
-    // Return type. String returns are supported: the thunk returns a
-    // heap-allocated `char*` that the wrapper copies via `.toKString()` and
-    // then frees via `free` (imported from `platform.posix`).
+    // Return type. String and [UInt8] returns are supported.
     let ktReturnType = swiftTypeToKotlin(decl.functionSignature.result.type)
     guard let ktReturn = ktReturnType else {
       return skip("unsupported return type '\(decl.functionSignature.result.type)'")
     }
 
     // C-side: lower the Swift signature to its `@_cdecl` form via the shared FFM
-    // lowering (e.g. `String` -> `UnsafePointer<Int8>`), then render the C
-    // declaration from that. This is the single source of truth for the C ABI
-    // (the same lowering FFM uses for its FunctionDescriptor). A lowering failure
-    // means the type isn't C-representable -> skip.
+    // lowering, then render the C declaration. For `[UInt8]` returns we use a
+    // KN-specific ABI (`uint8_t* thunk(..., ptrdiff_t* result_count)`) because
+    // the FFM callback ABI is incompatible with Kotlin/Native's staticCFunction.
     let thunkName = thunkNames.functionThunkName(decl: decl)
     let cFunction: CFunction
     do {
       let lowered = try CdeclLowering(symbolTable: symbolTable)
         .lowerFunctionSignature(decl.functionSignature)
-      cFunction = try CFunction(cdeclSignature: lowered.cdeclSignature, cName: thunkName)
+      switch ktReturn {
+      case .array(.uByte):
+        // Append the out-count arg that the Kotlin wrapper will pass via memScoped.
+        callArgs.append("countVar.ptr")
+        let knownTypes = SwiftKnownTypes(symbolTable: symbolTable)
+        let normalParams = lowered.parameters.flatMap { $0.cdeclParameters }
+        let countParam = SwiftParameter(
+          convention: .byValue,
+          parameterName: "result_count",
+          type: knownTypes.unsafeMutablePointer(knownTypes.int)
+        )
+        let customSig = SwiftFunctionSignature(
+          selfParameter: nil,
+          parameters: normalParams + [countParam],
+          result: SwiftResult(convention: .direct, type: knownTypes.unsafeMutablePointer(knownTypes.uint8)),
+          effectSpecifiers: [],
+          genericParameters: [],
+          genericRequirements: []
+        )
+        cFunction = try CFunction(cdeclSignature: customSig, cName: thunkName)
+      default:
+        cFunction = try CFunction(cdeclSignature: lowered.cdeclSignature, cName: thunkName)
+      }
     } catch {
       return skip("unsupported C lowering: \(error)")
     }
@@ -179,7 +229,8 @@ package class KotlinNativeSwift2KotlinGenerator {
       callArgs: callArgs,
       isThrowing: decl.isThrowing,
       usesCInterop: usesCInterop,
-      cFunction: cFunction
+      cFunction: cFunction,
+      pinnings: pinnings
     ))
   }
 
@@ -203,10 +254,12 @@ package class KotlinNativeSwift2KotlinGenerator {
     printer.print("import \(cinteropPackage).*")
 
     printer.print("import kotlinx.cinterop.*")
-    // `free` is needed to release the heap-allocated `char*` returned by
-    // String-returning thunks; it is NOT in kotlinx.cinterop.
+    // `free` is needed to release heap-allocated pointers returned by
+    // String- and [UInt8]-returning thunks; it is NOT in kotlinx.cinterop.
     let needsFree = resolvedFunctions().contains {
-      if case .emit(let fn) = $0 { return fn.kotlinReturn == .string }
+      if case .emit(let fn) = $0 {
+        return fn.kotlinReturn == .string || fn.kotlinReturn == .array(.uByte)
+      }
       return false
     }
     if needsFree {
@@ -231,18 +284,54 @@ package class KotlinNativeSwift2KotlinGenerator {
     let argsString = fn.callArgs.joined(separator: ", ")
 
     printer.print("fun \(fn.kotlinName)(\(paramsString)): \(fn.kotlinReturn) {\(throwsComment)")
+    // One or more ByteArray parameters: wrap the call in nested usePinned
+    // blocks so the GC cannot move the arrays while the thunk is running.
+    var indent = "  "
+    for (i, pinning) in fn.pinnings.enumerated() {
+      // Only the outermost usePinned needs a `return` prefix (for non-Unit
+      // returns) because usePinned is inline and propagates the lambda value.
+      let returnPrefix = (i == 0 && fn.kotlinReturn != .unit) ? "return " : ""
+      printer.print("\(indent)\(returnPrefix)\(pinning.paramName).usePinned { \(pinning.pinnedName) ->")
+      indent += "  "
+    }
+    let returnPrefix = (fn.pinnings.isEmpty) ? "return " : ""
     switch fn.kotlinReturn {
     case .unit:
-      printer.print("  \(fn.thunkName)(\(argsString))")
+      printer.print("\(indent)\(fn.thunkName)(\(argsString))")
     case .string:
-      // The thunk returns a heap-allocated `char*` (strdup'd by Swift). Copy
-      // it to a Kotlin String and free the C allocation.
-      printer.print("  val ptr = \(fn.thunkName)(\(argsString)) ?: return \"\"")
-      printer.print("  val result = ptr.toKString()")
-      printer.print("  free(ptr)")
-      printer.print("  return result")
+      // `return ""` is a non-local return from the enclosing named function,
+      // which is valid because usePinned is an inline function.
+      printer.print("\(indent)val ptr = \(fn.thunkName)(\(argsString)) ?: return \"\"")
+      printer.print("\(indent)val result = ptr.toKString()")
+      printer.print("\(indent)free(ptr)")
+      printer.print("\(indent)\(returnPrefix)result")
+    case .array(.uByte):
+      // The thunk returns a heap-allocated uint8_t* (caller must free) plus
+      // writes the element count into result_count. memScoped allocates the
+      // count variable on the stack; it is an inline function, so non-local
+      // `return` is valid inside its lambda.
+      printer.print("\(indent)memScoped {")
+      let ms = indent + "  "
+      printer.print("\(ms)val countVar = alloc<LongVar>()")
+      // `return UByteArray(0)` is a non-local return valid because both
+      // memScoped and usePinned are inline functions.
+      printer.print("\(ms)val ptr = \(fn.thunkName)(\(argsString)) ?: return UByteArray(0)")
+      printer.print("\(ms)val count = countVar.value.convert<Int>()")
+      printer.print("\(ms)val result = ptr.reinterpret<ByteVar>().readBytes(count).asUByteArray()")
+      printer.print("\(ms)free(ptr)")
+      // With pinnings the `return` on the outer usePinned propagates the value;
+      // bare `result` is the last expression of the memScoped lambda.
+      // Without pinnings we need an explicit `return result`.
+      printer.print("\(ms)\(returnPrefix)result")
+      printer.print("\(indent)}")
     default:
-      printer.print("  return \(fn.thunkName)(\(argsString))")
+      // The expression value propagates out through each usePinned lambda.
+      printer.print("\(indent)\(returnPrefix)\(fn.thunkName)(\(argsString))")
+    }
+    // Close the usePinned blocks in reverse order.
+    for _ in fn.pinnings {
+      indent = String(indent.dropLast(2))
+      printer.print("\(indent)}")
     }
     printer.print("}")
   }
@@ -297,6 +386,13 @@ package class KotlinNativeSwift2KotlinGenerator {
         case .double: return .double
         case .string: return .string
         case .void: return .unit
+        case .array(let element):
+          // Only [UInt8] is supported: it lowers to a (const void*, ptrdiff_t)
+          // pair in the C thunk, which we wrap with usePinned on the Kotlin side.
+          if let inner = swiftTypeToKotlin(element), inner == .uByte {
+            return .array(.uByte)
+          }
+          return nil
         default: break
         }
     }
@@ -317,6 +413,7 @@ package class KotlinNativeSwift2KotlinGenerator {
     case "Double", "Swift.Double": return .double
     case "String", "Swift.String": return .string
     case "Void",   "Swift.Void", "()": return .unit
+    case "[UInt8]", "[Swift.UInt8]": return .array(.uByte)
     default: return nil
     }
   }

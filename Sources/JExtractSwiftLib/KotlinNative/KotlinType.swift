@@ -47,7 +47,11 @@ extension KotlinType: CustomStringConvertible {
     case .double:        return "Double"
     case .string:        return "String"
     case .unit:          return "Unit"
-    case .array(let el): return "Array<\(el)>"
+    case .array(let el):
+      switch el {
+      case .uByte: return "UByteArray"
+      default:     return "Array<\(el)>"
+      }
     }
   }
 }
