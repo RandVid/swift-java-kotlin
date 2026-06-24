@@ -69,5 +69,16 @@ fun main() {
     val ulongSum = addUInt64(1_000_000_000uL, 2_000_000_000uL)
     println("   addUInt64(1_000_000_000, 2_000_000_000) = $ulongSum")
 
+    println("\n15. Calling function with ByteArray parameter:")
+    val firstElement = returnUByteArrayFirstElement(ubyteArrayOf(1u, 2u, 3u))
+    println("   returnByteArrayFirstElement([1u, 2u, 3u]) = $firstElement")
+
+    println("\n16. Calling function with ByteArray return:")
+    var returnedArray = returnUByteArray(4u, 5u, 6u)
+    println("   returnByteArray(4u, 5u, 6u) = $returnedArray")
+
+    println("\n17. Calling function with both several ByteArray parameters and ByteArray return:")
+    println("   returnByteArraysFirstElements([1u, 2u, 3u], [4u, 5u, 6u]) = ${returnUByteArraysFirstElements(ubyteArrayOf(1u, 2u, 3u), returnedArray)}")
+
     println("\n=== All Kotlin/Native -> Swift cinterop calls successful! ===")
 }
