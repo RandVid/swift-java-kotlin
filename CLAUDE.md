@@ -176,6 +176,7 @@ Tests/JExtractSwiftTests/
 BuildLogic/                 # Gradle plugin infrastructure
 SwiftKitCore/              # Core Java runtime libraries
 SwiftKitFFM/               # FFM-specific Java runtime support
+SwiftKitKN/                # Kotlin/Native runtime library (macOS arm64); exports SwiftHandle
 Samples/                   # Example applications (integration tests)
 ├── SwiftJavaExtractFFMSampleApp/  # Java FFM sample
 ├── KotlinFFMSampleApp/           # Kotlin (JVM) FFM delegation sample
@@ -249,9 +250,10 @@ layer**: generated Kotlin/Native wrappers call the Swift `@_cdecl` C thunks dire
   - Uniform box for class **and** struct: the init thunk `allocate`s + `initialize`s and returns a
     `void*`; methods/getters/setters reuse the shared `cdeclThunk` (`self` → `.pointee`); a per-type
     `_destroy` thunk does `deinitialize` + `deallocate`.
-  - Lifetime: a generated `SwiftHandle` runs `_destroy` exactly once via `AutoCloseable.close()`
-    (deterministic, `use {}`) or a GC `createCleaner` (auto), guarded by a CAS `AtomicInt`; calls
-    after destroy throw via `ensureAlive()`.
+  - Lifetime: `SwiftHandle` (from `SwiftKitKN`, `org.swift.swiftkit.kn`) runs `_destroy`
+    exactly once via `AutoCloseable.close()` (deterministic, `use {}`) or a GC `createCleaner`
+    (auto), guarded by a CAS `AtomicInt`; calls after destroy throw via `ensureAlive()`.
+    `SwiftHandle` is no longer emitted inline — generated code imports it from `SwiftKitKN`.
   - Accessor/dedup thunk symbols contain `$` (e.g. `value$get`), so the wrapper backtick-escapes
     cinterop references (`cinteropName`).
 - Reuses the existing `AnalysisResult` IR (including `importedTypes` and their members) and the
@@ -260,10 +262,10 @@ layer**: generated Kotlin/Native wrappers call the Swift `@_cdecl` C thunks dire
   on error (custom array/optional thunks only handle non-throwing functions, since the `nil`
   sentinel would be ambiguous with a thrown error).
 - Tests: `Tests/JExtractSwiftTests/KotlinNative/KotlinNativeTopLevelFunctionsTests.swift` (75) and
-  `KotlinNativeClassTests.swift` (class/struct support, 20).
-- Sample project: `Samples/KotlinNativeSampleApp` (macOS arm64 / `macosArm64`), with
-  `ci-validate.sh` and `macosArm64Test` integration tests (including a `Counter` class and `Point`
-  struct exercised end-to-end through cinterop).
+  `KotlinNativeClassTests.swift` (class/struct support, 30). Total KN suite: 105 tests.
+- Sample project: `Samples/KotlinNativeSampleApp` (macOS arm64 / `macosArm64`), depends on
+  `SwiftKitKN` for `SwiftHandle`; `ci-validate.sh` and `macosArm64Test` integration tests
+  (including a `Counter` class and `Point` struct exercised end-to-end through cinterop).
 
 **ABI notes (why kotlinNative differs from FFM):**
 - **Arrays** — FFM uses a callback ABI (`Linker.upcallStub`); Kotlin/Native's `staticCFunction` has
@@ -401,8 +403,14 @@ Use these file paths when referencing code locations:
 - [Samples/KotlinFFMSampleApp/](fleet-file://utdu5g2ng8hqlmm30vu8/Users/ilya.plisko/IdeaProjects/swift-java-kotlin/Samples/KotlinFFMSampleApp?type=file&root=%252F) - Kotlin (JVM) FFM delegation integration test
 - `Samples/KotlinNativeSampleApp/` - Kotlin/Native direct-cinterop integration test (macOS arm64)
 
+**Kotlin/Native runtime library:**
+- `SwiftKitKN/build.gradle.kts` - KMP module declaration (macosArm64, macOS-only in settings)
+- `SwiftKitKN/src/macosArm64Main/kotlin/org/swift/swiftkit/kn/SwiftHandle.kt` - public `SwiftHandle` class
+
 ## Additional Resources
 
+- **`.claude/ClassImpl.md`** - class/struct bridging design: allocation options, ARC accounting, KN box/destroy rationale
+- **`.claude/ClassImplDone.md`** - full implementation notes + high-effort code review for KN class/struct support; includes the worked three-artifact example (Kotlin wrapper, C header, Swift thunks) and `SwiftKitKN` migration
 - **`.claude/ArrayImpl.md`** - `[UInt8]`/`UByteArray` ABI in Kotlin/Native, the SIGBUS bug + fix
 - **`.claude/OptionalImpl.md`** - Optional params/returns and `String?` in Kotlin/Native
 - **`.claude/PRIMITIVE_ARRAY_IMPL.md`** - Plan for generalising arrays to all primitive element types
