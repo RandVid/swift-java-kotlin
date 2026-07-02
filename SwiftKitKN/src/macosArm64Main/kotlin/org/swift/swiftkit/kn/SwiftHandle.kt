@@ -1,6 +1,7 @@
 package org.swift.swiftkit.kn
 
 import kotlinx.cinterop.COpaquePointer
+import platform.darwin.NSObject
 import kotlin.concurrent.AtomicInt
 
 /**

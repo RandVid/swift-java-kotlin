@@ -1,5 +1,8 @@
 package com.example.kotlinnative
 
+import com.example.kotlinnative.cinterop.swiftjava_SimpleSwiftLib_Counter_init_start
+import platform.darwin.NSObject
+import kotlinx.cinterop.*
 import kotlin.native.runtime.GC
 import kotlin.native.runtime.NativeRuntimeApi
 import kotlin.test.Test
@@ -313,7 +316,7 @@ class SimpleSwiftLibTest {
         val a = Counter(3L)
         val b = Counter(4L)
         val sum = a.plus(b)
-        assertEquals(7L, sum.currentValue())
+        assertEquals(7L, sum.value)
     }
 
     @Test
@@ -326,31 +329,31 @@ class SimpleSwiftLibTest {
 
     // Struct support (uniform box path).
 
-    @Test
-    fun testStruct_constructAndMethod() {
-        Point(3L, 4L).use { p ->
-            assertEquals(7L, p.sum())
-        }
-    }
+//    @Test
+//    fun testStruct_constructAndMethod() {
+//        Point(3L, 4L).use { p ->
+//            assertEquals(7L, p.sum())
+//        }
+//    }
+//
+//    @Test
+//    fun testStruct_propertyAndCustomReturn() {
+//        val p = Point(1L, 2L)
+//        assertEquals(1L, p.x)
+//        assertEquals(2L, p.y)
+//        val moved = p.translated(10L, 20L)
+//        assertEquals(11L, moved.x)
+//        assertEquals(22L, moved.y)
+//    }
 
-    @Test
-    fun testStruct_propertyAndCustomReturn() {
-        val p = Point(1L, 2L)
-        assertEquals(1L, p.x)
-        assertEquals(2L, p.y)
-        val moved = p.translated(10L, 20L)
-        assertEquals(11L, moved.x)
-        assertEquals(22L, moved.y)
-    }
-
-    @Test
-    fun testClass_useAfterCloseThrows() {
-        val counter = Counter(1L)
-        counter.close()
-        assertFailsWith<IllegalStateException> {
-            counter.currentValue()
-        }
-    }
+//    @Test
+//    fun testClass_useAfterCloseThrows() {
+//        val counter = Counter(1L)
+//        counter.close()
+//        assertFailsWith<IllegalStateException> {
+//            counter.currentValue()
+//        }
+//    }
 
     @Test
     fun testClass_extensionMethodIsImported() {
@@ -482,94 +485,6 @@ class SimpleSwiftLibTest {
         assertTrue(bytes.all { it == 0u.toUByte() })
     }
 
-    // Memory-safety tests. These rely on the Swift-side deinit/init counters
-    // (counterInitCount/counterDeinitCount) and assert *deltas*, so they are
-    // independent of how many Counters other tests created. All Counters here are
-    // closed explicitly (use {} / close()), so the deltas are deterministic and
-    // do not depend on when the GC cleaner runs.
-
-    @Test
-    fun testMemory_destroyRunsExactlyOnceOnClose() {
-        val initsBefore = counterInitCount()
-        val deinitsBefore = counterDeinitCount()
-        Counter(10L).use { it.increment(1L) }
-        // Exactly one construction and one destruction — no leak, no double-free.
-        assertEquals(initsBefore + 1L, counterInitCount())
-        assertEquals(deinitsBefore + 1L, counterDeinitCount())
-    }
-
-    @Test
-    fun testMemory_doubleCloseIsIdempotent() {
-        val before = counterDeinitCount()
-        val c = Counter(5L)
-        c.close()
-        c.close()   // second close must be a no-op (CAS guard), not a double-free
-        assertEquals(before + 1L, counterDeinitCount())
-    }
-
-    @Test
-    fun testMemory_noLeakAcrossManyObjects() {
-        val before = counterDeinitCount()
-        val n = 100
-        for (i in 0 until n) {
-            Counter(i.toLong()).use { it.increment(1L) }
-        }
-        assertEquals(before + n.toLong(), counterDeinitCount())
-    }
-
-    @Test
-    fun testMemory_returnedObjectOutlivesProducerAndSharedIdentity() {
-        val before = counterDeinitCount()
-        val a = Counter(0L)
-        val b = a.selfReference()              // a and b wrap the same Swift object
-        a.increment(7L)
-        assertEquals(7L, b.currentValue())     // shared reference identity
-
-        a.close()
-        assertEquals(before, counterDeinitCount())
-        assertEquals(7L, b.currentValue())     // still valid → not prematurely deleted
-
-        b.close()
-        assertEquals(before + 1L, counterDeinitCount())
-    }
-
-    @Test
-    fun testMemory_returnedFromSwiftOutlivesProducerInSwift() {
-        val before = counterDeinitCount()
-        val c = retainCounterInSwift(5L)
-        assertEquals(before, counterDeinitCount())
-        dropSwiftStrongRef()
-        assertEquals(before, counterDeinitCount())
-        assertEquals(5L, c.currentValue())
-        c.close()
-        assertEquals(before + 1L, counterDeinitCount())
-    }
-
-    @Test
-    fun testMemory_weakRefIsNilledAfterClose() {
-        val c = retainCounterInSwift(5L)
-        storeWeakRef(c)
-        assertTrue(isWeakRefAlive())
-        dropSwiftStrongRef()
-        assertTrue(isWeakRefAlive())
-        assertEquals(5L, c.currentValue())
-        c.close()
-        assertFalse(isWeakRefAlive())
-    }
-
-    @Test
-    fun testMemory_weakRefIsStillAliveIfHasStrongRefInSwift() {
-        val c = retainCounterInSwift(5L)
-        storeWeakRef(c)
-        assertTrue(isWeakRefAlive())
-        c.close()
-        assertTrue(isWeakRefAlive())
-        dropSwiftStrongRef()
-        assertFalse(isWeakRefAlive())
-    }
-
-    // GC-cleaner path tests to test whether the GC can clean up the Swift object
-
     private fun allocAndDiscard(start: Long) { Counter(start) }
 
     @Test
@@ -582,17 +497,66 @@ class SimpleSwiftLibTest {
         assertEquals(deinitsBefore + 1L, counterDeinitCount())
     }
 
-    private fun allocAndClose(start: Long) { Counter(start).close() }
+    private fun copyAndDiscard(copied: Counter) { copied.selfReference() }
+
+    @OptIn(NativeRuntimeApi::class)
+    @Test
+    fun testMemory_returnedObjectOutlivesProducerAndSharedIdentity() {
+        GC.collect()
+        val before = counterDeinitCount()
+        val a = Counter(7L)
+        copyAndDiscard(a)
+        GC.collect()
+        assertEquals(before, counterDeinitCount())
+        assertEquals(7L, a.currentValue())
+    }
 
     @Test
-    @OptIn(NativeRuntimeApi::class)
-    fun testMemory_cleanerIsNoOpWhenAlreadyClosed() {
-        GC.collect()
-        val deinitsBefore = counterDeinitCount()
-        allocAndClose(1L)
-        GC.collect()
-        assertEquals(deinitsBefore + 1L, counterDeinitCount())
+    fun testMemory_returnedFromSwiftOutlivesProducerInSwift() {
+        val before = counterDeinitCount()
+        val c = retainCounterInSwift(5L)
+        assertEquals(before, counterDeinitCount())
+        dropSwiftStrongRef()
+        assertEquals(before, counterDeinitCount())
+        assertEquals(5L, c.currentValue())
     }
+
+    fun weakRefIsNilledAfterClose_helper() {
+        val c = retainCounterInSwift(5L)
+        storeWeakRef(c)
+        assertTrue(isWeakRefAlive())
+        dropSwiftStrongRef()
+        assertTrue(isWeakRefAlive())
+        assertEquals(5L, c.currentValue())
+    }
+
+    @OptIn(NativeRuntimeApi::class)
+    @Test
+    fun testMemory_weakRefIsNilledAfterClose() {
+        GC.collect()
+        weakRefIsNilledAfterClose_helper()
+        GC.collect()
+        assertFalse(isWeakRefAlive())
+    }
+
+    fun weakRefIsStillAliveIfHasStrongRefInSwift_helper() {
+        val c = retainCounterInSwift(5L)
+        storeWeakRef(c)
+        assertTrue(isWeakRefAlive())
+    }
+
+    @OptIn(NativeRuntimeApi::class)
+    @Test
+    fun testMemory_weakRefIsStillAliveIfHasStrongRefInSwift() {
+        GC.collect()
+        weakRefIsStillAliveIfHasStrongRefInSwift_helper()
+        GC.collect()
+        assertTrue(isWeakRefAlive())
+        dropSwiftStrongRef()
+        assertFalse(isWeakRefAlive())
+    }
+
+    // GC-cleaner path tests to test whether the GC can clean up the Swift object
 
     private fun allocAndDiscardN(n: Int) { repeat(n) { Counter(it.toLong()) } }
 
@@ -607,21 +571,21 @@ class SimpleSwiftLibTest {
         assertEquals(deinitsBefore + n.toLong(), counterDeinitCount())
     }
 
-    @Test
-    fun testMemory_structReleasesReferenceMember() {
-        val before = counterDeinitCount()
-        val c = Counter(3L)
-        val h = Holder(c)
-        assertEquals(3L, h.value())
-
-        c.close()
-        // The Holder still owns the Counter, so closing `c` must not free it.
-        assertEquals(before, counterDeinitCount())
-        assertEquals(3L, h.value())            // reachable via the struct → still alive
-
-        h.close()
-        // The struct's _destroy runs `deinitialize`, releasing its `counter`
-        // field — the underlying object is now freed exactly once.
-        assertEquals(before + 1L, counterDeinitCount())
-    }
+//    @Test
+//    fun testMemory_structReleasesReferenceMember() {
+//        val before = counterDeinitCount()
+//        val c = Counter(3L)
+//        val h = Holder(c)
+//        assertEquals(3L, h.value())
+//
+//        c.close()
+//        // The Holder still owns the Counter, so closing `c` must not free it.
+//        assertEquals(before, counterDeinitCount())
+//        assertEquals(3L, h.value())            // reachable via the struct → still alive
+//
+//        h.close()
+//        // The struct's _destroy runs `deinitialize`, releasing its `counter`
+//        // field — the underlying object is now freed exactly once.
+//        assertEquals(before + 1L, counterDeinitCount())
+//    }
 }

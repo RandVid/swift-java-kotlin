@@ -31,10 +31,8 @@ struct KotlinNativeClassTests {
       expectedChunks: [
         """
         @OptIn(ExperimentalNativeApi::class)
-        class Counter internal constructor(private val __handle: SwiftHandle) : AutoCloseable {
-          private val __cleaner = createCleaner(__handle) { it.destroy() }
-          internal fun __ptr(): COpaquePointer = __handle.ensureAlive()
-          override fun close() = __handle.destroy()
+        class Counter internal constructor(private val __obj: NSObject) {
+          internal fun __ptr(): COpaquePointer = interpretCPointer<CPointed>(__obj.objcPtr())!!
         """
       ]
     )
@@ -69,7 +67,7 @@ struct KotlinNativeClassTests {
       .java,
       expectedChunks: [
         """
-        constructor(start: Long) : this(SwiftHandle(swiftjava_SwiftModule_Counter_init_start(start)!!, ::swiftjava_SwiftModule_Counter_destroy))
+        constructor(start: Long) : this(wrapSwiftObject { swiftjava_SwiftModule_Counter_init_start(start) })
         """
       ]
     )
@@ -89,10 +87,8 @@ struct KotlinNativeClassTests {
         """
         @_cdecl("swiftjava_SwiftModule_Counter_init_start")
         public func swiftjava_SwiftModule_Counter_init_start(_ start: Int) -> UnsafeMutableRawPointer {
-            let _result = Counter(start: start)
-            let _ptr = UnsafeMutablePointer<Counter>.allocate(capacity: 1)
-            _ptr.initialize(to: _result)
-            return UnsafeMutableRawPointer(_ptr)
+            let _result = Counter(start: start) as AnyObject
+            return Unmanaged<AnyObject>.passRetained(_result).autorelease().toOpaque()
         }
         """
       ]
@@ -111,9 +107,7 @@ struct KotlinNativeClassTests {
         """
         @_cdecl("swiftjava_SwiftModule_Counter_destroy")
         public func swiftjava_SwiftModule_Counter_destroy(_ pointer: UnsafeMutableRawPointer) {
-            let typed = pointer.assumingMemoryBound(to: Counter.self)
-            typed.deinitialize(count: 1)
-            typed.deallocate()
+            Unmanaged<AnyObject>.fromOpaque(pointer).release()
         }
         """
       ]
@@ -179,7 +173,7 @@ struct KotlinNativeClassTests {
         """
         @_cdecl("swiftjava_SwiftModule_Counter_add_x")
         public func swiftjava_SwiftModule_Counter_add_x(_ x: Int, _ self: UnsafeRawPointer) -> Int {
-          return self.assumingMemoryBound(to: Counter.self).pointee.add(x: x)
+          return Unmanaged<Counter>.fromOpaque(self).takeUnretainedValue().add(x: x)
         }
         """
       ]
@@ -274,10 +268,10 @@ struct KotlinNativeClassTests {
         """
         var value: Long
           get() {
-            return `swiftjava_SwiftModule_Counter_value$get`(__ptr())
+            return swiftjava_SwiftModule_Counter_value_kn_get(__ptr())
           }
           set(value) {
-            `swiftjava_SwiftModule_Counter_value$set`(value, __ptr())
+            swiftjava_SwiftModule_Counter_value_kn_set(value, __ptr())
           }
         """
       ]
@@ -299,7 +293,7 @@ struct KotlinNativeClassTests {
         """
         val value: Long
           get() {
-            return `swiftjava_SwiftModule_Counter_value$get`(__ptr())
+            return swiftjava_SwiftModule_Counter_value_kn_get(__ptr())
           }
         """
       ],
@@ -326,7 +320,7 @@ struct KotlinNativeClassTests {
           """
           val value: Long
             get() {
-              return `swiftjava_SwiftModule_Counter_value$get`(__ptr())
+              return swiftjava_SwiftModule_Counter_value_kn_get(__ptr())
             }
           """
         ],
@@ -353,7 +347,7 @@ struct KotlinNativeClassTests {
       .java,
       expectedChunks: [
         """
-        class Point internal constructor(private val __handle: SwiftHandle) : AutoCloseable {
+        class Point internal constructor(private val __obj: NSObject) {
         """,
         """
         fun sum(): Long {
@@ -377,10 +371,8 @@ struct KotlinNativeClassTests {
       expectedChunks: [
         """
         public func swiftjava_SwiftModule_Point_init_x_y(_ x: Int, _ y: Int) -> UnsafeMutableRawPointer {
-            let _result = Point(x: x, y: y)
-            let _ptr = UnsafeMutablePointer<Point>.allocate(capacity: 1)
-            _ptr.initialize(to: _result)
-            return UnsafeMutableRawPointer(_ptr)
+            let _result = Point(x: x, y: y) as AnyObject
+            return Unmanaged<AnyObject>.passRetained(_result).autorelease().toOpaque()
         }
         """
       ]
@@ -401,8 +393,7 @@ struct KotlinNativeClassTests {
       expectedChunks: [
         """
         fun makeBox(): Box {
-          val ptr = swiftjava_SwiftModule_makeBox()
-          return Box(SwiftHandle(ptr!!, ::swiftjava_SwiftModule_Box_destroy))
+          return Box(wrapSwiftObject { swiftjava_SwiftModule_makeBox() })
         }
         """
       ]
@@ -422,10 +413,8 @@ struct KotlinNativeClassTests {
         """
         @_cdecl("swiftjava_SwiftModule_makeBox")
         public func swiftjava_SwiftModule_makeBox() -> UnsafeMutableRawPointer {
-            let _result = makeBox()
-            let _ptr = UnsafeMutablePointer<Box>.allocate(capacity: 1)
-            _ptr.initialize(to: _result)
-            return UnsafeMutableRawPointer(_ptr)
+            let _result = makeBox() as AnyObject
+            return Unmanaged<AnyObject>.passRetained(_result).autorelease().toOpaque()
         }
         """
       ]
@@ -464,7 +453,7 @@ struct KotlinNativeClassTests {
         """
         @_cdecl("swiftjava_SwiftModule_useBox_box")
         public func swiftjava_SwiftModule_useBox_box(_ box: UnsafeRawPointer) -> Int {
-          return useBox(box: box.assumingMemoryBound(to: Box.self).pointee)
+          return useBox(box: Unmanaged<Box>.fromOpaque(box).takeUnretainedValue())
         }
         """
       ]
@@ -487,8 +476,7 @@ struct KotlinNativeClassTests {
         """
         val child: Child
           get() {
-            val ptr = `swiftjava_SwiftModule_Parent_child$get`(__ptr())
-            return Child(SwiftHandle(ptr!!, ::swiftjava_SwiftModule_Child_destroy))
+            return Child(wrapSwiftObject { swiftjava_SwiftModule_Parent_child_kn_get(__ptr()) })
           }
         """
       ]
@@ -509,12 +497,10 @@ struct KotlinNativeClassTests {
       .swift,
       expectedChunks: [
         """
-        @_cdecl("swiftjava_SwiftModule_Parent_child$get")
-        public func swiftjava_SwiftModule_Parent_child$get(_ self: UnsafeRawPointer) -> UnsafeMutableRawPointer {
-            let _result = self.assumingMemoryBound(to: Parent.self).pointee.child
-            let _ptr = UnsafeMutablePointer<Child>.allocate(capacity: 1)
-            _ptr.initialize(to: _result)
-            return UnsafeMutableRawPointer(_ptr)
+        @_cdecl("swiftjava_SwiftModule_Parent_child_kn_get")
+        public func swiftjava_SwiftModule_Parent_child_kn_get(_ self: UnsafeRawPointer) -> UnsafeMutableRawPointer {
+            let _result = Unmanaged<Parent>.fromOpaque(self).takeUnretainedValue().child as AnyObject
+            return Unmanaged<AnyObject>.passRetained(_result).autorelease().toOpaque()
         }
         """
       ]
@@ -535,8 +521,7 @@ struct KotlinNativeClassTests {
       expectedChunks: [
         """
         fun plus(other: Vec): Vec {
-          val ptr = swiftjava_SwiftModule_Vec_plus_other(other.__ptr(), __ptr())
-          return Vec(SwiftHandle(ptr!!, ::swiftjava_SwiftModule_Vec_destroy))
+          return Vec(wrapSwiftObject { swiftjava_SwiftModule_Vec_plus_other(other.__ptr(), __ptr()) })
         }
         """
       ]
@@ -741,7 +726,7 @@ struct KotlinNativeClassTests {
         """
         val value: Long?
             get() {
-                val ptr = `swiftjava_SwiftModule_Box_value$get`(__ptr()) ?: return null
+                val ptr = swiftjava_SwiftModule_Box_value_kn_get(__ptr()) ?: return null
                 val result = ptr.pointed.value
                 free(ptr)
                 return result
@@ -764,7 +749,7 @@ struct KotlinNativeClassTests {
       .swift,
       expectedChunks: [
         // Property getter: member access without parens, not value().
-        "let _result: Int = self.assumingMemoryBound(to: Box.self).pointee.value"
+        "guard let _result: Int = Unmanaged<Box>.fromOpaque(self).takeUnretainedValue().value else { return nil }"
       ],
       notExpectedChunks: ["pointee.value("]
     )
@@ -784,7 +769,7 @@ struct KotlinNativeClassTests {
       .java,
       expectedChunks: [
         """
-        constructor(seed: UByteArray) : this(seed.usePinned { pinned_seed -> SwiftHandle(swiftjava_SwiftModule_Builder_init_seed(if (seed.size > 0) pinned_seed.addressOf(0) else null, seed.size.toLong())!!, ::swiftjava_SwiftModule_Builder_destroy) })
+        constructor(seed: UByteArray) : this(seed.usePinned { pinned_seed -> wrapSwiftObject { swiftjava_SwiftModule_Builder_init_seed(if (seed.size > 0) pinned_seed.addressOf(0) else null, seed.size.toLong()) } })
         """
       ]
     )
@@ -807,7 +792,7 @@ struct KotlinNativeClassTests {
             get() {
                 memScoped {
                     val countVar = alloc<LongVar>()
-                    val ptr = `swiftjava_SwiftModule_Store_bytes$get`(countVar.ptr, __ptr()) ?: return UByteArray(0)
+                    val ptr = swiftjava_SwiftModule_Store_bytes_kn_get(countVar.ptr, __ptr()) ?: return UByteArray(0)
                     val count = countVar.value.convert<Int>()
                     val result = ptr.reinterpret<ByteVar>().readBytes(count).asUByteArray()
                     free(ptr)
@@ -837,7 +822,7 @@ struct KotlinNativeClassTests {
         """
             set(value) {
               value.usePinned { pinned_value ->
-                `swiftjava_SwiftModule_Store_bytes$set`(if (value.size > 0) pinned_value.addressOf(0) else null, value.size.toLong(), __ptr())
+                swiftjava_SwiftModule_Store_bytes_kn_set(if (value.size > 0) pinned_value.addressOf(0) else null, value.size.toLong(), __ptr())
               }
             }
         """
@@ -859,10 +844,10 @@ struct KotlinNativeClassTests {
       expectedChunks: [
         // Property getter: member access without parens, not bytes().
         """
-        @_cdecl("swiftjava_SwiftModule_Store_bytes$get")
-        public func swiftjava_SwiftModule_Store_bytes$get(_ result_count: UnsafeMutablePointer<Int>, _ self: UnsafeRawPointer) -> UnsafeMutablePointer<UInt8>? {
+        @_cdecl("swiftjava_SwiftModule_Store_bytes_kn_get")
+        public func swiftjava_SwiftModule_Store_bytes_kn_get(_ result_count: UnsafeMutablePointer<Int>, _ self: UnsafeRawPointer) -> UnsafeMutablePointer<UInt8>? {
         """,
-        "let _result: [UInt8] = self.assumingMemoryBound(to: Store.self).pointee.bytes"
+        "let _result: [UInt8] = Unmanaged<Store>.fromOpaque(self).takeUnretainedValue().bytes"
       ],
       notExpectedChunks: [
         "pointee.bytes("  // must NOT call bytes() like a function
@@ -1059,8 +1044,8 @@ struct KotlinNativeClassTests {
       .kotlinNative,
       .java,
       expectedChunks: [
-        "class Outer_Box internal constructor(private val __handle: SwiftHandle) : AutoCloseable {",
-        "constructor() : this(SwiftHandle(swiftjava_SwiftModule_Outer_Box_init()!!, ::swiftjava_SwiftModule_Outer_Box_destroy))",
+        "class Outer_Box internal constructor(private val __obj: NSObject) {",
+        "constructor() : this(wrapSwiftObject { swiftjava_SwiftModule_Outer_Box_init() })",
       ]
     )
   }
@@ -1068,6 +1053,8 @@ struct KotlinNativeClassTests {
   @Test
   func nestedType_destroyThunkUsesQualifiedSwiftType() throws {
     // The C symbol uses the flat name; the Swift type reference is qualified.
+    // The destroy thunk itself is now type-erased (`Unmanaged<AnyObject>`), so the
+    // qualified Swift type only appears in the init thunk that constructs the box.
     try assertOutput(
       input: """
         public struct Outer {
@@ -1080,11 +1067,10 @@ struct KotlinNativeClassTests {
       .swift,
       expectedChunks: [
         """
-        @_cdecl("swiftjava_SwiftModule_Outer_Box_destroy")
-        public func swiftjava_SwiftModule_Outer_Box_destroy(_ pointer: UnsafeMutableRawPointer) {
-            let typed = pointer.assumingMemoryBound(to: Outer.Box.self)
-            typed.deinitialize(count: 1)
-            typed.deallocate()
+        @_cdecl("swiftjava_SwiftModule_Outer_Box_init")
+        public func swiftjava_SwiftModule_Outer_Box_init() -> UnsafeMutableRawPointer {
+            let _result = Outer.Box() as AnyObject
+            return Unmanaged<AnyObject>.passRetained(_result).autorelease().toOpaque()
         }
         """
       ]

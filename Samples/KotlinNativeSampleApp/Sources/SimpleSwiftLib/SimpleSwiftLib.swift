@@ -2,6 +2,8 @@
 // Mirrors the KotlinFFMSampleApp source so the two modes can be compared
 // for parity. Contains only primitive types supported by the generators.
 
+import Swift
+
 public func helloWorld() {
   print("Hello from Swift!")
 }
@@ -163,10 +165,12 @@ public class Counter {
     public init(start: Int) {
         self.count = start
         _counterInits += 1
+        print("[SWIFT] init count=\(start) self=\(String(unsafeBitCast(self, to: UInt.self), radix: 16))")
     }
 
     deinit {
         _counterDeinits += 1
+        print("[SWIFT] deinit count=\(count) self=\(String(unsafeBitCast(self, to: UInt.self), radix: 16))")
     }
 
     /// Returns `self` — exercises returning an *existing* object across the
@@ -291,23 +295,23 @@ public class ByteBuffer {
 }
 
 /// A value type exercising the uniform box path for structs.
-public struct Point {
-    public var x: Int
-    public var y: Int
-
-    public init(x: Int, y: Int) {
-        self.x = x
-        self.y = y
-    }
-
-    public func sum() -> Int {
-        return x + y
-    }
-
-    public func translated(dx: Int, dy: Int) -> Point {
-        return Point(x: x + dx, y: y + dy)
-    }
-}
+// public struct Point {
+//     public var x: Int
+//     public var y: Int
+//
+//     public init(x: Int, y: Int) {
+//         self.x = x
+//         self.y = y
+//     }
+//
+//     public func sum() -> Int {
+//         return x + y
+//     }
+//
+//     public func translated(dx: Int, dy: Int) -> Point {
+//         return Point(x: x + dx, y: y + dy)
+//     }
+// }
 
 /// Top-level function taking and returning a custom type.
 public func combine(a: Counter, b: Counter) -> Counter {
@@ -353,14 +357,14 @@ public func isWeakRefAlive() -> Bool {
 /// A value type holding a *reference* member, so that destroying a `Holder` box
 /// must release its `counter` — exercises the struct branch of the `_destroy`
 /// thunk (`deinitialize` releasing reference-typed fields, not just freeing bytes).
-public struct Holder {
-    public let counter: Counter
-
-    public init(counter: Counter) {
-        self.counter = counter
-    }
-
-    public func value() -> Int {
-        return counter.currentValue()
-    }
-}
+// public struct Holder {
+//     public let counter: Counter
+//
+//     public init(counter: Counter) {
+//         self.counter = counter
+//     }
+//
+//     public func value() -> Int {
+//         return counter.currentValue()
+//     }
+// }

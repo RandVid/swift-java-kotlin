@@ -152,8 +152,47 @@ extension KotlinNativeSwift2KotlinGenerator {
       genericParameters: decl.functionSignature.genericParameters,
       genericRequirements: decl.functionSignature.genericRequirements
     )
-    let lowered = try CdeclLowering(symbolTable: symbolTable).lowerFunctionSignature(sig)
+    var lowered = try CdeclLowering(symbolTable: symbolTable).lowerFunctionSignature(sig)
+    // KN-specific object raise. Every custom object (a `self` receiver or a custom-type
+    // parameter) is boxed as the retained Swift object itself
+    // (`Unmanaged.passRetained(...).toOpaque()`, see `nominalAllocatingThunk`), so it must
+    // be recovered with `Unmanaged<T>.fromOpaque(<ptr>).takeUnretainedValue()`. The shared
+    // `CdeclLowering` instead lowers a nominal input as a typed-pointer box
+    // (`<ptr>.assumingMemoryBound(to: T.self).pointee`), which would misread the object
+    // header. Overriding the conversions here fixes every emitter at once: the shared
+    // `cdeclThunk` default/throwing paths and all custom KN thunks read these conversions.
+    if case .instance(_, let selfType) = decl.functionSignature.selfParameter,
+       let name = knObjectTypeName(selfType) {
+      lowered.selfParameter?.conversion = knObjectRaiseConversion(typeName: name)
+    }
+    for (i, param) in decl.functionSignature.parameters.enumerated() {
+      guard case .object? = swiftTypeToKotlin(param.type),
+            let name = knObjectTypeName(param.type) else { continue }
+      lowered.parameters[i].conversion = knObjectRaiseConversion(typeName: name)
+    }
     return (lowered, wrappedOptionalReturn)
+  }
+
+  /// The qualified Swift type name of a custom nominal (class) type, usable as a
+  /// Swift type expression (e.g. `Outer.Inner`), or nil if `t` is not nominal.
+  func knObjectTypeName(_ t: SwiftType) -> String? {
+    guard case .nominal(let nom) = t else { return nil }
+    return nom.nominalTypeDecl.qualifiedName
+  }
+
+  /// The KN object raise: recover a boxed Swift object from an opaque pointer via
+  /// `Unmanaged<T>.fromOpaque(<placeholder>).takeUnretainedValue()`. The placeholder
+  /// is substituted with the cdecl parameter name (`self`, or the argument name) by
+  /// `ConversionStep.asExprSyntax`. Only reference types (class) are boxed this way.
+  func knObjectRaiseConversion(typeName: String) -> ConversionStep {
+    .member(
+      .method(
+        base: "Unmanaged<\(typeName)>",
+        methodName: "fromOpaque",
+        arguments: [LabeledArgument(label: nil, argument: .placeholder)]
+      ),
+      member: "takeUnretainedValue()"
+    )
   }
 
   /// Build the C signature for a custom-type (object) return: the thunk returns an
@@ -234,14 +273,6 @@ extension KotlinNativeSwift2KotlinGenerator {
     decl: ImportedFunc,
     thunkName: String
   ) -> DeclSyntax {
-    let resultType = decl.functionSignature.result.type
-    // The box element type is referenced in Swift source (`UnsafeMutablePointer<…>`),
-    // so use the qualified Swift type name (e.g. `Outer.Box`), not the simple name.
-    let resultName: String = {
-      if case .nominal(let nom) = resultType { return nom.nominalTypeDecl.qualifiedName }
-      return String(describing: resultType)
-    }()
-
     let isInstance: Bool = {
       if case .instance = decl.functionSignature.selfParameter { return true }
       return false
@@ -297,10 +328,10 @@ extension KotlinNativeSwift2KotlinGenerator {
       callExpr = isGetter ? decl.name : "\(decl.name)(\(arguments))"
     }
 
-    bodyItems.append("let _result = \(raw: callExpr)")
-    bodyItems.append("let _ptr = UnsafeMutablePointer<\(raw: resultName)>.allocate(capacity: 1)")
-    bodyItems.append("_ptr.initialize(to: _result)")
-    bodyItems.append("return UnsafeMutableRawPointer(_ptr)")
+    // The box IS the retained Swift object: retain it and hand back the opaque
+    // pointer. `_destroy` (see `destroyThunk`) balances this with one `release()`.
+    bodyItems.append("let _result = \(raw: callExpr) as AnyObject")
+    bodyItems.append("return Unmanaged<AnyObject>.passRetained(_result).autorelease().toOpaque()")
 
     let indented = bodyItems.map { $0.with(\.leadingTrivia, [.newlines(1), .spaces(4)]) }
     thunkFn.body = CodeBlockSyntax(
@@ -408,17 +439,14 @@ extension KotlinNativeSwift2KotlinGenerator {
   /// Emit the per-type `_destroy` thunk: run the value's deinit and free the box.
   /// Uniform for class (ARC release) and struct (release of reference members).
   func destroyThunk(for nominal: ImportedNominalType) -> DeclSyntax {
-    // C symbol uses the flat name (unique, matches the member thunks); the Swift
-    // type reference uses the qualified name (a valid Swift type expression).
+    // C symbol uses the flat name (unique, matches the member thunks). Balances the
+    // `passRetained` in `nominalAllocatingThunk`: one release frees the object.
     let cName = destroyThunkName(nominal.swiftNominal.flatName)
-    let swiftType = nominal.swiftNominal.qualifiedName
     let fn = try! FunctionDeclSyntax(
       """
       @_cdecl(\(literal: cName))
       public func \(raw: cName)(_ pointer: UnsafeMutableRawPointer) {
-          let typed = pointer.assumingMemoryBound(to: \(raw: swiftType).self)
-          typed.deinitialize(count: 1)
-          typed.deallocate()
+          Unmanaged<AnyObject>.fromOpaque(pointer).release()
       }
       """
     )

@@ -89,8 +89,10 @@ extension KotlinNativeSwift2KotlinGenerator {
     let className = nominal.swiftNominal.flatName
 
     switch nominal.swiftNominal.kind {
-    case .class, .struct:
+    case .class:
       break
+    case .struct:
+      printer.print("// Structs are forbidden for now")
     case .actor, .enum, .protocol:
       printer.print("// Skipped \(className): only class/struct are supported in kotlinNative mode")
       return
@@ -99,12 +101,12 @@ extension KotlinNativeSwift2KotlinGenerator {
     let destroy = destroyThunkName(className)
 
     printer.print("@OptIn(ExperimentalNativeApi::class)")
-    printer.print("class \(className) internal constructor(private val __handle: SwiftHandle) : AutoCloseable {")
+    printer.print("class \(className) internal constructor(private val __obj: NSObject) {")
     // GC fallback: the lambda captures only `__handle` (passed as the cleaner's
     // root), never `this`, so the cleaner can actually run.
-    printer.print("  private val __cleaner = createCleaner(__handle) { it.destroy() }")
-    printer.print("  internal fun __ptr(): COpaquePointer = __handle.ensureAlive()")
-    printer.print("  override fun close() = __handle.destroy()")
+//    printer.print("  private val __cleaner = createCleaner(__handle) { it.destroy() }")
+    printer.print("  internal fun __ptr(): COpaquePointer = interpretCPointer<CPointed>(__obj.objcPtr())!!")
+//    printer.print("  override fun close() = __handle.destroy()")
 
     // Constructors (Swift initializers).
     for initializer in nominal.initializers {
@@ -150,8 +152,6 @@ extension KotlinNativeSwift2KotlinGenerator {
 
   // MARK: - Member rendering
 
-  /// Render a Swift initializer as a secondary Kotlin constructor that delegates
-  /// to the primary `SwiftHandle` constructor.
   private func renderConstructor(_ decl: ImportedFunc, className: String, destroy: String) -> [String] {
     var paramDecls: [String] = []
     var args: [String] = []
@@ -166,10 +166,11 @@ extension KotlinNativeSwift2KotlinGenerator {
       if let pinning = pa.pinning { pinnings.append(pinning) }
     }
 
-    let thunk = cinteropName(thunkNames.functionThunkName(decl: decl))
-    // Build SwiftHandle(…) wrapped in usePixnned blocks (innermost-first reversal)
-    // so each pinned name is in scope at the call site.
-    var expr = "SwiftHandle(\(thunk)(\(args.joined(separator: ", ")))!!, ::\(destroy))"
+    let thunk = cinteropName(nativeThunkName(decl: decl))
+      // `wrapSwiftObject` runs the thunk + `interpretObjCPointer` inside an
+      // `autoreleasepool` so the thunk's `passRetained(...).autorelease()` +1 is
+      // balanced (see `printObjectWrapHelper`).
+      var expr = "wrapSwiftObject { \(thunk)(\(args.joined(separator: ", "))) }"
     for pinning in pinnings.reversed() {
       expr = "\(pinning.paramName).usePinned { \(pinning.pinnedName) -> \(expr) }"
     }

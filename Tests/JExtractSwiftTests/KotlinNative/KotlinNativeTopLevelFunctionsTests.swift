@@ -1317,10 +1317,10 @@ struct KotlinNativeTopLevelFunctionsTests {
         """
         var counter: Long
             get() {
-                return `swiftjava_SwiftModule_counter$get`()
+                return swiftjava_SwiftModule_counter_kn_get()
             }
             set(value) {
-                `swiftjava_SwiftModule_counter$set`(value)
+                swiftjava_SwiftModule_counter_kn_set(value)
             }
         """
       ]
@@ -1337,7 +1337,7 @@ struct KotlinNativeTopLevelFunctionsTests {
         """
         val pi: Double
             get() {
-                return `swiftjava_SwiftModule_pi$get`()
+                return swiftjava_SwiftModule_pi_kn_get()
             }
         """
       ]
@@ -1354,13 +1354,13 @@ struct KotlinNativeTopLevelFunctionsTests {
         """
         var greeting: String
             get() {
-                val ptr = `swiftjava_SwiftModule_greeting$get`() ?: return ""
+                val ptr = swiftjava_SwiftModule_greeting_kn_get() ?: return ""
                 val result = ptr.toKString()
                 free(ptr)
                 return result
             }
             set(value) {
-                `swiftjava_SwiftModule_greeting$set`(value.cstr)
+                swiftjava_SwiftModule_greeting_kn_set(value.cstr)
             }
         """
       ]
@@ -1377,13 +1377,13 @@ struct KotlinNativeTopLevelFunctionsTests {
         """
         var score: Long?
             get() {
-                val ptr = `swiftjava_SwiftModule_score$get`() ?: return null
+                val ptr = swiftjava_SwiftModule_score_kn_get() ?: return null
                 val result = ptr.pointed.value
                 free(ptr)
                 return result
             }
             set(value) {
-                `swiftjava_SwiftModule_score$set`(value?.let { cValuesOf(it) })
+                swiftjava_SwiftModule_score_kn_set(value?.let { cValuesOf(it) })
             }
         """
       ]
@@ -1402,7 +1402,7 @@ struct KotlinNativeTopLevelFunctionsTests {
             get() {
                 memScoped {
                     val countVar = alloc<LongVar>()
-                    val ptr = `swiftjava_SwiftModule_buffer$get`(countVar.ptr) ?: return UByteArray(0)
+                    val ptr = swiftjava_SwiftModule_buffer_kn_get(countVar.ptr) ?: return UByteArray(0)
                     val count = countVar.value.convert<Int>()
                     val result = ptr.reinterpret<ByteVar>().readBytes(count).asUByteArray()
                     free(ptr)
@@ -1411,7 +1411,7 @@ struct KotlinNativeTopLevelFunctionsTests {
             }
             set(value) {
                 value.usePinned { pinned_value ->
-                  `swiftjava_SwiftModule_buffer$set`(if (value.size > 0) pinned_value.addressOf(0) else null, value.size.toLong())
+                  swiftjava_SwiftModule_buffer_kn_set(if (value.size > 0) pinned_value.addressOf(0) else null, value.size.toLong())
                 }
             }
         """
@@ -1432,11 +1432,10 @@ struct KotlinNativeTopLevelFunctionsTests {
         """
         var shared: Box
             get() {
-                val ptr = `swiftjava_SwiftModule_shared$get`()
-                return Box(SwiftHandle(ptr!!, ::swiftjava_SwiftModule_Box_destroy))
+                return Box(wrapSwiftObject { swiftjava_SwiftModule_shared_kn_get() })
             }
             set(value) {
-                `swiftjava_SwiftModule_shared$set`(value.__ptr())
+                swiftjava_SwiftModule_shared_kn_set(value.__ptr())
             }
         """
       ]
@@ -1451,10 +1450,10 @@ struct KotlinNativeTopLevelFunctionsTests {
       .swift,
       expectedChunks: [
         """
-        @_cdecl("swiftjava_SwiftModule_counter$get")
+        @_cdecl("swiftjava_SwiftModule_counter_kn_get")
         """,
         """
-        @_cdecl("swiftjava_SwiftModule_counter$set")
+        @_cdecl("swiftjava_SwiftModule_counter_kn_set")
         """
       ]
     )
