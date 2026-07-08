@@ -12,7 +12,12 @@ repositories {
 // Swift build outputs (the dynamic library + the jextract-generated
 // `<Module>-Swift.h` header that cinterop consumes).
 val swiftDebugDir = layout.projectDirectory.dir(".build/arm64-apple-macosx/debug")
-val generatedKotlinDir = layout.buildDirectory.dir("kotlin-native-generated/kotlin")
+// Keep generated Kotlin out of Gradle's `build/` dir: IntelliJ auto-excludes
+// `build/` from indexing and does not reliably un-exclude generated Kotlin/Native
+// source roots under it, which left the generated symbols unresolved (red) in the
+// editor and killed the test run-gutter icons. `.build/` (already used for the C
+// header and git-ignored) is indexed normally once registered as a source dir.
+val generatedKotlinDir = layout.projectDirectory.dir(".build/kotlin-native-generated/kotlin")
 // The generator emits a plain-C header for cinterop here (via --output-swift).
 val generatedHeaderDir = layout.projectDirectory.dir(".build/kotlin-native-generated/swift")
 val cinteropDefFile = layout.projectDirectory.file("native/SimpleSwiftLib.def")
@@ -51,11 +56,14 @@ val generateKotlinNativeBindings = tasks.register<Exec>("generateKotlinNativeBin
         "--swift-module", "SimpleSwiftLib",
         "--input-swift", "Samples/KotlinNativeSampleApp/Sources/SimpleSwiftLib",
         "--output-swift", "Samples/KotlinNativeSampleApp/.build/kotlin-native-generated/swift",
-        "--output-java", "Samples/KotlinNativeSampleApp/build/kotlin-native-generated/kotlin",
+        "--output-java", "Samples/KotlinNativeSampleApp/.build/kotlin-native-generated/kotlin",
         "--java-package", "com.example.kotlinnative",
         "--mode", "kotlinNative"
     )
     inputs.dir("Sources/SimpleSwiftLib")
+    // Re-run generation when the swift-java tool itself changes, otherwise Gradle
+    // treats the task as up-to-date and reuses stale wrappers after a tool rebuild.
+    inputs.file(swiftJavaTool)
     outputs.dir(generatedKotlinDir)
     outputs.dir(generatedHeaderDir)
     dependsOn(buildRootProject)
@@ -114,12 +122,18 @@ kotlin {
     sourceSets {
         val macosArm64Main by getting {
             kotlin.srcDir(generatedKotlinDir)
+            dependencies {
+                implementation(project(":SwiftKitKN"))
+            }
         }
         val macosArm64Test by getting {
             dependencies {
                 implementation(kotlin("test"))
             }
         }
+    }
+    sourceSets.macosArm64Test.dependencies {
+        implementation(kotlin("test"))
     }
 }
 

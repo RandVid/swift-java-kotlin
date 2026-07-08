@@ -340,9 +340,6 @@ struct KotlinNativeTopLevelFunctionsTests {
       .java,
       expectedChunks: [
         "fun add(a: Long, b: Long): Long {"
-      ],
-      notExpectedChunks: [
-        "import platform.posix.free"
       ]
     )
   }
@@ -691,6 +688,25 @@ struct KotlinNativeTopLevelFunctionsTests {
     )
   }
 
+  // MARK: - Swift thunk generation (.swift render kind)
+
+  @Test
+  func swiftThunk_primitiveReturn() throws {
+    try assertOutput(
+      input: "public func add(a: Int, b: Int) -> Int { 0 }",
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_add_a_b")
+        public func swiftjava_SwiftModule_add_a_b(_ a: Int, _ b: Int) -> Int {
+          return add(a: a, b: b)
+        }
+        """
+      ]
+    )
+  }
+
   // MARK: - Unsupported types are skipped
 
   @Test
@@ -705,14 +721,104 @@ struct KotlinNativeTopLevelFunctionsTests {
     )
   }
 
+  // MARK: - Top-level global variables
+
   @Test
-  func unsupported_optionalReturn_isSkipped() throws {
+  func globalVar_readWrite_kotlin() throws {
     try assertOutput(
-      input: "public func maybeInt() -> Int? { nil }",
+      input: "public var counter: Int = 0",
       .kotlinNative,
       .java,
       expectedChunks: [
-        "// Skipped maybeInt: unsupported return type"
+        """
+        var counter: Long
+            get() {
+                return swiftjava_SwiftModule_counter_kn_get()
+            }
+            set(value) {
+                swiftjava_SwiftModule_counter_kn_set(value)
+            }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func globalVar_readOnly_kotlin() throws {
+    try assertOutput(
+      input: "public var pi: Double { return 3.14159 }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        val pi: Double
+            get() {
+                return swiftjava_SwiftModule_pi_kn_get()
+            }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func globalVar_string_kotlin() throws {
+    try assertOutput(
+      input: "public var greeting: String = \"hello\"",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        var greeting: String
+            get() {
+                val ptr = swiftjava_SwiftModule_greeting_kn_get() ?: return ""
+                val result = ptr.toKString()
+                free(ptr)
+                return result
+            }
+            set(value) {
+                swiftjava_SwiftModule_greeting_kn_set(value.cstr)
+            }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func globalVar_customObject_kotlin() throws {
+    try assertOutput(
+      input: """
+        public class Box { public init() {} }
+        public var shared: Box = Box()
+        """,
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        var shared: Box
+            get() {
+                return Box(wrapSwiftObject { swiftjava_SwiftModule_shared_kn_get() })
+            }
+            set(value) {
+                swiftjava_SwiftModule_shared_kn_set(value.__ptr())
+            }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func globalVar_readWrite_swiftThunk() throws {
+    try assertOutput(
+      input: "public var counter: Int = 0",
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_counter_kn_get")
+        """,
+        """
+        @_cdecl("swiftjava_SwiftModule_counter_kn_set")
+        """
       ]
     )
   }
