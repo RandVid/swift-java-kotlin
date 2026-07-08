@@ -7,8 +7,7 @@
 
 /// A Kotlin type as used in Kotlin/Native generated wrappers.
 ///
-/// Only nominal types are supported for now. Generic types carry their
-/// resolved type argument (e.g. `.array(.long)`).
+/// Only nominal types are supported for now.
 package indirect enum KotlinType: Equatable {
   // Signed integers
   case long
@@ -27,8 +26,9 @@ package indirect enum KotlinType: Equatable {
   // Reference / special types
   case string
   case unit
-  // Generic
-  case array(KotlinType)
+  // A generated wrapper class for a Swift nominal type (class or struct).
+  // The associated value is the Kotlin wrapper class name (e.g. "Counter").
+  case object(String)
 }
 
 extension KotlinType: CustomStringConvertible {
@@ -47,7 +47,7 @@ extension KotlinType: CustomStringConvertible {
     case .double:        return "Double"
     case .string:        return "String"
     case .unit:          return "Unit"
-    case .array(let el): return "Array<\(el)>"
+    case .object(let name):    return name
     }
   }
 }

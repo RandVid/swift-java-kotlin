@@ -90,6 +90,11 @@ if (ffmCapable) {
 } else {
     skipped += "SwiftKitFFM"
 }
+if (isMacOS) {
+    include("SwiftKitKN")
+} else {
+    skipped += "SwiftKitKN"
+}
 
 // Include sample apps -- you can run them via `gradle Name:run`
 if (!(settings.providers.gradleProperty("skipSamples").orNull.toBoolean())) {
