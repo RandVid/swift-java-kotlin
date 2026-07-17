@@ -31,6 +31,30 @@ package indirect enum KotlinType: Equatable {
   case object(String)
 }
 
+extension KotlinType {
+  /// The `kotlinx.cinterop` `CVariable` cell type used to materialize a value of
+  /// this type in native memory (for marshalling `inout` scalar parameters).
+  /// `nil` for non-scalar types (`String`, `Unit`, custom objects) — those do not
+  /// go through a value cell.
+  var cinteropVarType: String? {
+    switch self {
+    case .long:    return "LongVar"
+    case .int:     return "IntVar"
+    case .short:   return "ShortVar"
+    case .byte:    return "ByteVar"
+    case .uLong:   return "ULongVar"
+    case .uInt:    return "UIntVar"
+    case .uShort:  return "UShortVar"
+    case .uByte:   return "UByteVar"
+    case .boolean: return "BooleanVar"
+    case .float:   return "FloatVar"
+    case .double:  return "DoubleVar"
+    case .string, .unit, .object:
+      return nil
+    }
+  }
+}
+
 extension KotlinType: CustomStringConvertible {
   package var description: String {
     switch self {

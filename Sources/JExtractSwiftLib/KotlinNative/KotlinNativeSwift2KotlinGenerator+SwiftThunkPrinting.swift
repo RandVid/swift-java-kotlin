@@ -101,6 +101,11 @@ extension KotlinNativeSwift2KotlinGenerator {
           printer.print("")
         }
       }
+      // Structs also get a `copy` thunk (used by the value-semantics bridges).
+      if nominal.swiftNominal.kind == .struct {
+        printer.print(copyThunk(for: nominal).description)
+        printer.print("")
+      }
       printer.print(destroyThunk(for: nominal).description)
       printer.print("")
     }
@@ -141,19 +146,21 @@ extension KotlinNativeSwift2KotlinGenerator {
     return nom.nominalTypeDecl.qualifiedName
   }
 
-  /// The KN object raise: recover a boxed Swift object from an opaque pointer via
-  /// `Unmanaged<T>.fromOpaque(<placeholder>).takeUnretainedValue()`. The placeholder
-  /// is substituted with the cdecl parameter name (`self`, or the argument name) by
-  /// `ConversionStep.asExprSyntax`. Only reference types (class) are boxed this way.
+  /// `(Unmanaged<AnyObject>.fromOpaque(<placeholder>).takeUnretainedValue() as! T)`.
+  //  185 +  /// The placeholder is substituted with the cdecl parameter name (`self`, or the
+  //  186 +  /// argument name) by `ConversionStep.asExprSyntax`.
   func knObjectRaiseConversion(typeName: String) -> ConversionStep {
-    .member(
-      .method(
-        base: "Unmanaged<\(typeName)>",
-        methodName: "fromOpaque",
-        arguments: [LabeledArgument(label: nil, argument: .placeholder)]
-      ),
-      member: "takeUnretainedValue()"
-    )
+      let raise: ConversionStep = .member(
+          .method(
+              base: "Unmanaged<AnyObject>",
+              methodName: "fromOpaque",
+              arguments: [LabeledArgument(label: nil, argument: .placeholder)]
+          ),
+          member: "takeUnretainedValue() as! \(typeName)"
+      )
+      // Parenthesize: `.method(base: nil, methodName: nil, ...)` renders `(<arg>)`,
+      // so the cast stays one expression when used as a member-access base.
+      return .method(base: nil, methodName: nil, arguments: [LabeledArgument(label: nil, argument: raise)])
   }
 
   /// Build the C signature for a custom-type (object) return: the thunk returns an
@@ -190,6 +197,14 @@ extension KotlinNativeSwift2KotlinGenerator {
     let thunkName = nativeThunkName(decl: decl)
     let resultType = decl.functionSignature.result.type
 
+    // Functions/members with `inout` parameters or a mutable (`inout`) struct `self`
+    // (a settable property, `mutating` method, or subscript setter) use a bespoke
+    // read/write-back thunk: the shared lowering rejects `inout`, so KN emits the
+    // ABI itself. A mutable struct `self` is handled as an `inout Self` box cell.
+    if needsInoutThunk(decl) {
+      return try inoutThunk(for: decl, thunkName: thunkName)
+    }
+
     let lowered = try loweredCdeclForThunk(decl)
 
     // Box-allocating thunk for initializers and custom-type returns.
@@ -198,6 +213,258 @@ extension KotlinNativeSwift2KotlinGenerator {
     }
 
     return DeclSyntax(lowered.cdeclThunk(cName: thunkName, swiftAPIName: decl.name, as: decl.apiKind))
+  }
+
+  // MARK: - inout thunks (primitive + custom-type, top-level + members)
+
+  /// Error thrown when an `inout` signature is not (yet) supported by KN — used to
+  /// keep the thunk, the C header, and the Kotlin wrapper in lockstep (they all
+  /// skip the same declarations).
+  struct InoutUnsupported: Error { let reason: String }
+
+  /// Whether `decl` must use the bespoke `inout` read/write-back thunk: it has an
+  /// `inout` parameter, or a mutable (`inout`) struct `self` (a `mutating` method
+  /// or a struct property setter). The shared lowering rejects both.
+  func needsInoutThunk(_ decl: ImportedFunc) -> Bool {
+    if decl.functionSignature.parameters.contains(where: { $0.convention == .inout }) { return true }
+    return inoutSelfIsMutableStruct(decl)
+  }
+
+  /// True when `self` is a mutable (`inout`) struct receiver — the box is a frozen
+  /// `__SwiftValue`, so mutation is realized by re-boxing and swapping the pointer.
+  func inoutSelfIsMutableStruct(_ decl: ImportedFunc) -> Bool {
+    if case .instance(.inout, let selfType) = decl.functionSignature.selfParameter,
+       selfType.asNominalTypeDeclaration?.kind == .struct {
+      return true
+    }
+    return false
+  }
+
+  /// The Swift expression that raises a custom value from an opaque box pointer.
+  /// Shared by every `@_cdecl` thunk that unpacks a boxed object: by-value custom
+  /// parameters, an instance `self`, and the box pointer extracted from an `inout`
+  /// cell.
+  func objectRaiseExpr(from ptr: String, swiftType: String) -> String {
+    "Unmanaged<AnyObject>.fromOpaque(\(ptr)).takeUnretainedValue() as! \(swiftType)"
+  }
+
+  /// The Swift expression that boxes a custom value into a freshly retained
+  /// `AnyObject` and hands back its opaque pointer (balanced by the `_destroy`
+  /// thunk / host GC). Used when re-boxing an `inout` value on write-back.
+  func objectBoxExpr(_ value: String) -> String {
+    "Unmanaged<AnyObject>.passRetained(\(value) as AnyObject).autorelease().toOpaque()"
+  }
+
+  /// The cdecl form of an `inout` signature. Every mutable slot (an `inout`
+  /// parameter or a mutable struct `self`) is a `void*` cell; by-value primitives
+  /// keep their C type, by-value custom types are `void*` boxes, and the result is
+  /// a scalar or `Void`. Throws `InoutUnsupported` for anything else so all three
+  /// artifacts skip the declaration together.
+  func inoutCdeclSignature(for decl: ImportedFunc) throws -> SwiftFunctionSignature {
+    let knownTypes = SwiftKnownTypes(symbolTable: symbolTable)
+    var params: [SwiftParameter] = []
+    for p in decl.functionSignature.parameters {
+      if p.convention == .inout {
+        guard inoutFlavor(p.type) != nil else {
+          throw InoutUnsupported(reason: "unsupported inout parameter '\(p.type)'")
+        }
+        params.append(SwiftParameter(convention: .byValue, parameterName: p.parameterName,
+                                     type: knownTypes.unsafeMutableRawPointer))
+      } else if swiftScalarName(p.type) != nil {
+        params.append(SwiftParameter(convention: .byValue, parameterName: p.parameterName, type: p.type))
+      } else if case .object? = swiftTypeToKotlin(p.type) {
+        params.append(SwiftParameter(convention: .byValue, parameterName: p.parameterName,
+                                     type: knownTypes.unsafeRawPointer))
+      } else {
+        throw InoutUnsupported(reason: "unsupported by-value parameter '\(p.type)' alongside inout")
+      }
+    }
+    // `self` (instance members) is appended after the regular parameters, matching
+    // the `cdeclThunk` ABI and the Kotlin wrapper's trailing self pointer. A mutable
+    // (`inout`) struct receiver — a settable property, a `mutating` method, or a
+    // subscript setter — is treated as an `inout Self` slot: `self` is a `void*`
+    // cell holding the box pointer, and the thunk re-boxes the mutated value back
+    // into it (`inoutThunk`), so the mutation persists exactly like any other
+    // `inout` argument. A borrowing (non-mutable) receiver stays a read-only
+    // `UnsafeRawPointer` box pointer.
+    if case .instance = decl.functionSignature.selfParameter {
+      let selfType = inoutSelfIsMutableStruct(decl)
+        ? knownTypes.unsafeMutableRawPointer
+        : knownTypes.unsafeRawPointer
+      params.append(SwiftParameter(convention: .byValue, parameterName: "self", type: selfType))
+    }
+    // The result is a scalar (kept as-is), a custom type (returned as an opaque
+    // `void*` box, like `nominalAllocatingThunk`), or `Void`. `String` is not
+    // supported (no C-string marshalling in the inout thunk).
+    let resultType = decl.functionSignature.result.type
+    let ktResult = swiftTypeToKotlin(resultType)
+    let isVoid = ktResult == .unit
+    let isObjectResult: Bool = { if case .object? = ktResult { return true }; return false }()
+    if !isVoid, !isObjectResult, swiftScalarName(resultType) == nil {
+      throw InoutUnsupported(reason: "non-scalar return '\(resultType)'")
+    }
+    let cResultType: SwiftType = isVoid ? .void
+      : (isObjectResult ? knownTypes.unsafeMutableRawPointer : resultType)
+    return SwiftFunctionSignature(
+      selfParameter: nil,
+      parameters: params,
+      result: SwiftResult(convention: .direct, type: cResultType),
+      effectSpecifiers: [],
+      genericParameters: [],
+      genericRequirements: []
+    )
+  }
+
+  /// The C declaration for an `inout` thunk.
+  func inoutCFunction(for decl: ImportedFunc, thunkName: String) throws -> CFunction {
+    try CFunction(cdeclSignature: inoutCdeclSignature(for: decl), cName: thunkName)
+  }
+
+  /// Emit the `@_cdecl` thunk for an `inout` function/member. Each mutable slot is
+  /// read out of its `void*` cell into a local `var` (a scalar via
+  /// `assumingMemoryBound`, or a custom value raised from its box), the Swift API is
+  /// called with `&local`, and the (possibly mutated) local is written back — for a
+  /// custom type by re-boxing into a new `AnyObject` and overwriting the cell.
+  func inoutThunk(for decl: ImportedFunc, thunkName: String) throws -> DeclSyntax {
+    _ = try inoutCdeclSignature(for: decl)  // validate up front
+
+    let resultType = decl.functionSignature.result.type
+    let ktResult = swiftTypeToKotlin(resultType)
+    let isVoid = ktResult == .unit
+    let isObjectResult: Bool = { if case .object? = ktResult { return true }; return false }()
+
+    var paramDecls: [String] = []
+    var reads: [String] = []
+    var callArgs: [String] = []   // with argument labels (method / setter calls)
+    var bareArgs: [String] = []   // label-free value expressions (subscript indexing)
+    var writebacks: [String] = []
+
+    for (i, p) in decl.functionSignature.parameters.enumerated() {
+      let name = p.parameterName ?? "_\(i)"
+      let label = p.argumentLabel.map { "\($0): " } ?? ""
+      if p.convention == .inout {
+        // Take the value out of the pointer (uniform for both flavors); for a
+        // custom type, layer the object raise / re-box unpacking on top.
+        switch inoutFlavor(p.type)! {
+        case .scalar(let swiftType, _):
+          let e = inoutCellExtract(param: name, pointeeType: swiftType, binding: "var", into: "_\(name)")
+          paramDecls.append(e.paramDecl)
+          reads.append(e.read)
+          callArgs.append("\(label)&_\(name)")
+          bareArgs.append("&_\(name)")
+          writebacks.append("\(e.writebackLHS) = _\(name)")
+        case .boxed(let swiftType, _):
+          let e = inoutCellExtract(param: name, pointeeType: "UnsafeMutableRawPointer", binding: "let", into: "\(name)_box")
+          paramDecls.append(e.paramDecl)
+          reads.append(e.read)
+          reads.append("var _\(name) = \(objectRaiseExpr(from: "\(name)_box", swiftType: swiftType))")
+          callArgs.append("\(label)&_\(name)")
+          bareArgs.append("&_\(name)")
+          writebacks.append("\(e.writebackLHS) = \(objectBoxExpr("_\(name)"))")
+        }
+      } else if swiftScalarName(p.type) != nil {
+        paramDecls.append("_ \(name): \(swiftScalarName(p.type)!)")
+        callArgs.append("\(label)\(name)")
+        bareArgs.append(name)
+      } else {
+        // By-value custom type: raise the object from its box pointer.
+        let swiftType = knObjectTypeName(p.type)!
+        paramDecls.append("_ \(name): UnsafeRawPointer")
+        let raised = objectRaiseExpr(from: name, swiftType: swiftType)
+        callArgs.append("\(label)\(raised)")
+        bareArgs.append(raised)
+      }
+    }
+
+    // Base expression to call the API on: raised `self` for an instance member,
+    // otherwise the bare function name.
+    let base: String
+    if case .instance(_, let selfType) = decl.functionSignature.selfParameter {
+      let swiftType = selfType.asNominalTypeDeclaration?.qualifiedName ?? "\(selfType)"
+      if inoutSelfIsMutableStruct(decl) {
+        // Mutable (`inout`) struct `self`: `self` is a `void*` cell holding the box
+        // pointer, treated exactly like a boxed `inout` parameter. Raise a mutable
+        // copy from the box, mutate it, and re-box the result back into the cell so
+        // the mutation persists on the Kotlin holder.
+        let e = inoutCellExtract(param: "self", pointeeType: "UnsafeMutableRawPointer", binding: "let", into: "self_box")
+        paramDecls.append(e.paramDecl)
+        reads.append(e.read)
+        reads.append("var _self = \(objectRaiseExpr(from: "self_box", swiftType: swiftType))")
+        writebacks.append("\(e.writebackLHS) = \(objectBoxExpr("_self"))")
+        base = "_self"
+      } else {
+        paramDecls.append("_ self: UnsafeRawPointer")
+        reads.append("let _self = \(objectRaiseExpr(from: "self", swiftType: swiftType))")
+        base = "_self"
+      }
+    } else {
+      base = ""
+    }
+
+    // Build the Swift call for the API kind. Subscripts are indexed (`base[i, j]`)
+    // with no argument labels; the setter's trailing arg is the assigned value.
+    let argList = callArgs.joined(separator: ", ")
+    let call: String
+    switch decl.apiKind {
+    case .getter:
+      call = base.isEmpty ? decl.name : "\(base).\(decl.name)"
+    case .setter:
+      call = base.isEmpty ? "\(decl.name) = \(argList)" : "\(base).\(decl.name) = \(argList)"
+    case .subscriptGetter:
+      call = "\(base)[\(bareArgs.joined(separator: ", "))]"
+    case .subscriptSetter:
+      let newValue = bareArgs.last ?? ""
+      let indices = bareArgs.dropLast().joined(separator: ", ")
+      call = "\(base)[\(indices)] = \(newValue)"
+    default:
+      call = base.isEmpty ? "\(decl.name)(\(argList))" : "\(base).\(decl.name)(\(argList))"
+    }
+
+    var body: [String] = reads
+    let isCallStatement = (decl.apiKind == .setter) || isVoid
+    if isCallStatement {
+      body.append(call)
+      body.append(contentsOf: writebacks)
+    } else {
+      body.append("let _result = \(call)")
+      body.append(contentsOf: writebacks)
+      // A custom-type result is handed back as an opaque `void*` box; scalars go
+      // straight into the C return slot.
+      body.append(isObjectResult ? "return \(objectBoxExpr("_result"))" : "return _result")
+    }
+    let bodyText = body.map { "    \($0)" }.joined(separator: "\n")
+
+    let retClause: String
+    if isVoid || decl.apiKind == .setter {
+      retClause = ""
+    } else if isObjectResult {
+      retClause = " -> UnsafeMutableRawPointer"
+    } else {
+      retClause = " -> \(swiftScalarName(resultType)!)"
+    }
+    let source = """
+      @_cdecl("\(thunkName)")
+      public func \(thunkName)(\(paramDecls.joined(separator: ", ")))\(retClause) {
+      \(bodyText)
+      }
+      """
+    return DeclSyntax(stringLiteral: source)
+  }
+
+  /// The "take the value out of the pointer" fragments for one `inout` slot: its
+  /// cdecl parameter declaration, the single read line binding `local` to the cell's
+  /// `pointee`, and the write-back LHS (`<param>.assumingMemoryBound(to:).pointee`)
+  /// the caller assigns the mutated value to. Flavor-agnostic: the object raise /
+  /// re-box "unpacking" for custom types is layered on by the caller
+  /// (`objectRaiseExpr` / `objectBoxExpr`).
+  private func inoutCellExtract(
+    param: String, pointeeType: String, binding: String, into local: String
+  ) -> (paramDecl: String, read: String, writebackLHS: String) {
+    (
+      "_ \(param): UnsafeMutableRawPointer",
+      "\(binding) \(local) = \(param).assumingMemoryBound(to: \(pointeeType).self).pointee",
+      "\(param).assumingMemoryBound(to: \(pointeeType).self).pointee"
+    )
   }
 
   /// Emit a box-allocating `@_cdecl` thunk that constructs (init), or calls a
@@ -246,10 +513,15 @@ extension KotlinNativeSwift2KotlinGenerator {
     }.joined(separator: ", ")
 
     // Build the call expression based on the kind of `self`. A property getter
-    // that returns a custom type is a member access, not a call (no parens/args).
-    let isGetter = decl.apiKind == .getter
+    // that returns a custom type is a member access, not a call (no parens/args); a
+    // subscript getter is indexed (`base[i, j]`) with no argument labels.
+    let subscriptArguments = paramExprs.map { $0.description }.joined(separator: ", ")
     func access(_ base: String) -> String {
-      isGetter ? "\(base).\(decl.name)" : "\(base).\(decl.name)(\(arguments))"
+      switch decl.apiKind {
+      case .getter: return "\(base).\(decl.name)"
+      case .subscriptGetter: return "\(base)[\(subscriptArguments)]"
+      default: return "\(base).\(decl.name)(\(arguments))"
+      }
     }
     let callExpr: String
     switch decl.functionSignature.selfParameter {
@@ -263,7 +535,7 @@ extension KotlinNativeSwift2KotlinGenerator {
       )!
       callExpr = access(selfExpr.description)
     case .none:
-      callExpr = isGetter ? decl.name : "\(decl.name)(\(arguments))"
+      callExpr = decl.apiKind == .getter ? decl.name : "\(decl.name)(\(arguments))"
     }
 
     // The box IS the retained Swift object: retain it and hand back the opaque
@@ -285,6 +557,10 @@ extension KotlinNativeSwift2KotlinGenerator {
   func memberCFunction(for decl: ImportedFunc) throws -> CFunction {
     let thunkName = nativeThunkName(decl: decl)
     let resultType = decl.functionSignature.result.type
+
+    if needsInoutThunk(decl) {
+      return try inoutCFunction(for: decl, thunkName: thunkName)
+    }
 
     let lowered = try loweredCdeclForThunk(decl)
 

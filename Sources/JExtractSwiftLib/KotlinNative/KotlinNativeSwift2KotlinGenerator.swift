@@ -88,6 +88,30 @@ package class KotlinNativeSwift2KotlinGenerator {
     /// machinery — the same lowering that produces FFM's Java FunctionDescriptor,
     /// so the C ABI has a single source of truth across modes.
     let cFunction: CFunction
+    /// One entry per `inout` parameter. When non-empty the wrapper body is wrapped
+    /// in a `memScoped { }` block that materializes each `Ref<T>.value` in a native
+    /// cell, calls the thunk with the cell pointers, then copies the mutated values
+    /// back into the caller's `Ref<T>` (see `printKotlinFunction`).
+    var inoutMarshals: [InoutMarshal] = []
+  }
+
+  /// How an `inout` value crosses the C boundary. Both flavors present a `void*`
+  /// cell to the thunk; they differ in what the cell holds.
+  enum InoutFlavor: Equatable {
+    /// A primitive: the cell holds the value directly (`LongVar`, …). `swiftType`
+    /// is the Swift source name for `assumingMemoryBound(to:)`.
+    case scalar(swiftType: String, varType: String)
+    /// A custom class/struct: the cell (`COpaquePointerVar`) holds the opaque box
+    /// pointer. `swiftType` is the qualified Swift type (for the `as!` cast),
+    /// `wrapperType` the generated Kotlin wrapper class name.
+    case boxed(swiftType: String, wrapperType: String)
+  }
+
+  /// Marshalling metadata for a single `inout` parameter of a `NativeFunc`.
+  struct InoutMarshal {
+    let paramName: String   // e.g. "value"       (the Ref<T> parameter)
+    let cellVar: String     // e.g. "value_cell"  (the local native cell)
+    let flavor: InoutFlavor
   }
 
   /// A resolved top-level global variable (Swift stored/computed var) ready to
@@ -257,6 +281,13 @@ package class KotlinNativeSwift2KotlinGenerator {
     // generated wrapper would not compile. Skip them on every artifact.
     guard decl.isThrowing == false else { return skip("throwing functions are not supported in kotlinNative mode") }
 
+    // Functions with `inout` parameters take a dedicated path: each `inout` value
+    // is surfaced as a `Ref<T>` and marshalled through a native cell (the shared
+    // FFM lowering rejects `inout` outright, so KN builds the ABI itself).
+    if decl.functionSignature.parameters.contains(where: { $0.convention == .inout }) {
+      return resolveInout(decl, skip: skip)
+    }
+
     var kotlinParams: [String] = []
     var callArgs: [String] = []
     var usesCInterop = false
@@ -313,6 +344,70 @@ package class KotlinNativeSwift2KotlinGenerator {
     ))
   }
 
+  /// Resolve a top-level function that has one or more `inout` parameters.
+  ///
+  /// The return must be a primitive or `Void`. Each `inout` parameter surfaces as a
+  /// `Ref<T>` and is marshalled through a native cell (a value cell for primitives,
+  /// a box-pointer cell for custom types); by-value parameters may be primitives or
+  /// custom types. The thunk reads each cell, calls the Swift function with
+  /// `&local`, and writes the (possibly mutated) value back (see `inoutThunk`).
+  private func resolveInout(_ decl: ImportedFunc, skip: (String) -> ResolvedFunc) -> ResolvedFunc {
+    // Return must be scalar, a custom (object) type, or Void. (String returns are
+    // still unsupported — no C-string marshalling in the inout thunk.)
+    let ktReturn = swiftTypeToKotlin(decl.functionSignature.result.type)
+    let objectReturn: Bool = { if case .object = ktReturn { return true }; return false }()
+    guard let ktReturn, ktReturn == .unit || ktReturn.cinteropVarType != nil || objectReturn else {
+      return skip("inout functions support only primitive/object/Void returns (got '\(decl.functionSignature.result.type)')")
+    }
+
+    var kotlinParams: [String] = []
+    var callArgs: [String] = []
+    var inoutMarshals: [InoutMarshal] = []
+
+    for (i, p) in decl.functionSignature.parameters.enumerated() {
+      let name = parameterName(p, at: i)
+      if p.convention == .inout {
+        guard let flavor = inoutFlavor(p.type), let kt = swiftTypeToKotlin(p.type) else {
+          return skip("unsupported inout parameter type '\(p.type)'")
+        }
+        let cellVar = "\(name)_cell"
+        kotlinParams.append("\(name): Inout<\(kt)>")
+        callArgs.append("\(cellVar).ptr")
+        inoutMarshals.append(InoutMarshal(paramName: name, cellVar: cellVar, flavor: flavor))
+      } else {
+        // By-value parameters reuse the standard parameter/argument mapping
+        // (primitive pass-through or `name.__ptr()` for a custom type).
+        guard let pa = kotlinParamAndArg(p, name: name), swiftTypeToKotlin(p.type) != nil else {
+          return skip("unsupported parameter type '\(p.type)' alongside inout")
+        }
+        // String by-value alongside inout is not supported yet (the manual thunk
+        // does not raise a C string); keep artifacts in sync by skipping.
+        if swiftTypeToKotlin(p.type) == .string {
+          return skip("String parameters alongside inout are not supported")
+        }
+        kotlinParams.append(pa.param)
+        callArgs.append(contentsOf: pa.callArgs)
+      }
+    }
+
+    let thunkName = nativeThunkName(decl: decl)
+    guard let cFunction = try? inoutCFunction(for: decl, thunkName: thunkName) else {
+      return skip("unsupported inout C lowering")
+    }
+
+    return .emit(NativeFunc(
+      kotlinName: decl.name,
+      thunkName: thunkName,
+      kotlinParams: kotlinParams,
+      kotlinReturn: ktReturn,
+      callArgs: callArgs,
+      isThrowing: decl.isThrowing,
+      usesCInterop: true,
+      cFunction: cFunction,
+      inoutMarshals: inoutMarshals
+    ))
+  }
+
   // MARK: - Kotlin sources
 
   package func writeExportedKotlinSources(printer: inout CodePrinter) throws {
@@ -349,6 +444,27 @@ package class KotlinNativeSwift2KotlinGenerator {
 
     printer.print("import kotlinx.cinterop.*")
     printer.print("import platform.posix.free")
+
+    // `Inout<T>` is the surface type for every `inout` parameter (top-level or
+    // member) and for the struct mutation extensions.
+    let topLevelHasInout = resolvedFunctions().contains {
+      if case .emit(let fn) = $0 { return !fn.inoutMarshals.isEmpty }
+      return false
+    }
+    let memberHasInoutParam = analysis.importedTypes.values.contains { nominal in
+      (nominal.initializers + nominal.methods + nominal.variables).contains { decl in
+        memberIsEmittable(decl)
+          && decl.functionSignature.parameters.contains { $0.convention == .inout }
+      }
+    }
+    // Structs are `SwiftCopyable` value classes with `Inout<Struct>` mutation extensions.
+    let hasStruct = analysis.importedTypes.values.contains { $0.swiftNominal.kind == .struct }
+    if topLevelHasInout || memberHasInoutParam || hasStruct {
+      printer.print("import org.swift.swiftkit.kn.Inout")
+    }
+    if hasStruct {
+      printer.print("import org.swift.swiftkit.kn.SwiftCopyable")
+    }
 
     // Imports needed by generated wrapper classes (handle lifetime management).
     if !analysis.importedTypes.isEmpty {
@@ -438,10 +554,94 @@ package class KotlinNativeSwift2KotlinGenerator {
     let throwsComment = fn.isThrowing ? " // throws" : ""
     let callExpr = "\(cinteropName(fn.thunkName))(\(fn.callArgs.joined(separator: ", ")))"
     printer.print("fun \(fn.kotlinName)(\(paramsString)): \(fn.kotlinReturn) {\(throwsComment)")
-    for line in renderFunctionBody(callExpr: callExpr, ret: fn.kotlinReturn, baseIndent: "  ") {
+    let bodyLines = fn.inoutMarshals.isEmpty
+      ? renderFunctionBody(callExpr: callExpr, ret: fn.kotlinReturn, baseIndent: "  ")
+      : renderInoutFunctionBody(callExpr: callExpr, ret: fn.kotlinReturn, marshals: fn.inoutMarshals, baseIndent: "  ")
+    for line in bodyLines {
       printer.print(line)
     }
     printer.print("}")
+  }
+
+  /// Render the body of a Kotlin wrapper that has `inout` parameters: open a
+  /// `memScoped { }`, materialize each `Ref<T>.value` into a native cell (a value
+  /// cell for primitives, a box-pointer cell for custom types), call the thunk with
+  /// the cell pointers, then copy the (mutated) cells back into the `Ref<T>`s. Only
+  /// `Unit` and primitive returns are supported (enforced by `resolveInout`).
+  func renderInoutFunctionBody(
+    callExpr: String, ret: KotlinType, marshals: [InoutMarshal], baseIndent: String
+  ) -> [String] {
+    let inner = baseIndent + "  "
+    let isVoid = (ret == .unit)
+    var lines: [String] = []
+    lines.append("\(baseIndent)\(isVoid ? "" : "return ")memScoped {")
+    for m in marshals {
+      lines += inoutCellPrologue(m, source: inoutRefSource(m), indent: inner)
+    }
+    if isVoid {
+      lines.append("\(inner)\(callExpr)")
+    } else {
+      lines.append(inoutResultCapture(ret: ret, callExpr: callExpr, indent: inner))
+    }
+    for m in marshals {
+      lines.append("\(inner)\(m.paramName).unsafeValue = \(inoutCellReadBack(m))")
+    }
+    if !isVoid {
+      lines.append("\(inner)_result")
+    }
+    lines.append("\(baseIndent)}")
+    return lines
+  }
+
+  /// The Kotlin statement binding `_result` to an `inout` thunk call, wrapping a
+  /// custom (object) return in its wrapper class (`Type(wrapSwiftObject { … })`) —
+  /// the box-return convention emitted by `inoutThunk`. Shared by every `inout`
+  /// render path (top-level, class members, struct mutation) so they stay in
+  /// lockstep. `ret` is a scalar or `.object`; `Unit` is handled by the caller.
+  func inoutResultCapture(ret: KotlinType, callExpr: String, indent: String) -> String {
+    if case .object(let typeName) = ret {
+      return "\(indent)val _result = \(typeName)(wrapSwiftObject { \(callExpr) })"
+    }
+    return "\(indent)val _result = \(callExpr)"
+  }
+
+  /// The Kotlin expression that seeds an `inout` cell from its `Inout<T>`: the scalar
+  /// value directly, or the wrapped value's box pointer for a custom type. Uses
+  /// `unsafeValue` to avoid a defensive copy (and keep the box alive during the call).
+  func inoutRefSource(_ m: InoutMarshal) -> String {
+    switch m.flavor {
+    case .scalar: return "\(m.paramName).unsafeValue"
+    case .boxed:  return "\(m.paramName).unsafeValue.__ptr()"
+    }
+  }
+
+  /// Kotlin lines that allocate an `inout` cell and copy `source` into it.
+  /// `source` is the current value expression (e.g. `value.value`, or `__ptr()`
+  /// for a mutable `self`).
+  func inoutCellPrologue(_ m: InoutMarshal, source: String, indent: String) -> [String] {
+    switch m.flavor {
+    case .scalar(_, let varType):
+      return [
+        "\(indent)val \(m.cellVar) = alloc<\(varType)>()",
+        "\(indent)\(m.cellVar).value = \(source)",
+      ]
+    case .boxed:
+      return [
+        "\(indent)val \(m.cellVar) = alloc<COpaquePointerVar>()",
+        "\(indent)\(m.cellVar).value = \(source)",
+      ]
+    }
+  }
+
+  /// The Kotlin expression that reads the (possibly mutated) value back out of an
+  /// `inout` cell: the scalar directly, or a fresh wrapper around the new box.
+  func inoutCellReadBack(_ m: InoutMarshal) -> String {
+    switch m.flavor {
+    case .scalar:
+      return "\(m.cellVar).value"
+    case .boxed(_, let wrapperType):
+      return "\(wrapperType)(wrapSwiftObject { \(m.cellVar).value })"
+    }
   }
 
   /// Render the body statements of a Kotlin function (excluding the outer braces),
@@ -528,6 +728,9 @@ package class KotlinNativeSwift2KotlinGenerator {
           printer.print("\(cFunction.description);")
         }
       }
+      if nominal.swiftNominal.kind == .struct, let cFunction = try? copyCFunction(for: nominal) {
+        printer.print("\(cFunction.description);")
+      }
       if let cFunction = try? destroyCFunction(for: nominal) {
         printer.print("\(cFunction.description);")
       }
@@ -597,6 +800,42 @@ package class KotlinNativeSwift2KotlinGenerator {
     case "Void",   "Swift.Void", "()": return .unit
     default: return nil
     }
+  }
+
+  /// The Swift source name of a scalar (trivially C-representable) type — the
+  /// value passed to `assumingMemoryBound(to:)` in an `inout` thunk. Returns `nil`
+  /// for non-scalar types (`String`, `Void`, custom class/struct), which do not
+  /// use the scalar-cell marshalling path.
+  func swiftScalarName(_ t: SwiftType) -> String? {
+    guard case .nominal(let n) = t, let known = n.asKnownType else { return nil }
+    switch known {
+    case .int:    return "Int"
+    case .int8:   return "Int8"
+    case .int16:  return "Int16"
+    case .int32:  return "Int32"
+    case .int64:  return "Int64"
+    case .uint:   return "UInt"
+    case .uint8:  return "UInt8"
+    case .uint16: return "UInt16"
+    case .uint32: return "UInt32"
+    case .uint64: return "UInt64"
+    case .bool:   return "Bool"
+    case .float:  return "Float"
+    case .double: return "Double"
+    default:      return nil
+    }
+  }
+
+  /// Classify a Swift type for `inout` marshalling. Returns `nil` for types that
+  /// cannot be an `inout` slot (`String`, `Void`, collections, …).
+  func inoutFlavor(_ t: SwiftType) -> InoutFlavor? {
+    if let swiftName = swiftScalarName(t), let varType = swiftTypeToKotlin(t)?.cinteropVarType {
+      return .scalar(swiftType: swiftName, varType: varType)
+    }
+    if case .object(let wrapper)? = swiftTypeToKotlin(t), let swiftName = knObjectTypeName(t) {
+      return .boxed(swiftType: swiftName, wrapperType: wrapper)
+    }
+    return nil
   }
 
   /// Compute the Kotlin parameter declaration and thunk call-site arguments for
