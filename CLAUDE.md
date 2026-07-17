@@ -259,11 +259,60 @@ layer**: generated Kotlin/Native wrappers call the Swift `@_cdecl` C thunks dire
   shared FFM `ThunkNameRegistry` / `CdeclLowering` so the C symbol names and ABI match across modes.
 - Throwing functions: the shared `cdeclThunk` wraps the call in `do { … } catch` and returns `nil`
   on error.
-- Tests: `Tests/JExtractSwiftTests/KotlinNative/KotlinNativeTopLevelFunctionsTests.swift` (48) and
-  `KotlinNativeClassTests.swift` (class/struct support, 31). Total KN suite: 79 tests.
+- **`inout` parameters** (`+SwiftThunkPrinting.swift` inout thunks, `+Classes.swift`
+  `renderInoutMethod`, `Inout.kt`): every Swift `inout T` surfaces as a Kotlin `Inout<T>` (a plain
+  `org.swift.swiftkit.kn.Inout<T>` value holder — see below). The thunk reads each mutable slot out of
+  a `void*` cell into a local `var`, calls the API with `&local`, then writes it back; the wrapper
+  seeds the cell from `Inout.unsafeValue` and stores the result back into `unsafeValue`.
+  - Primitive `inout`: the wrapper allocates a `memScoped` value cell (`LongVar`, …); the thunk uses
+    `assumingMemoryBound(to: T.self).pointee`.
+  - Custom-type `inout`: the wrapper seeds a box-pointer cell; the thunk raises the object,
+    mutates it, and re-boxes into a **new** `AnyObject`, writing the new pointer back (`objectRaiseExpr`
+    / `objectBoxExpr`). Lifetime stays on the GC/`interpretObjCPointer` model — no `createCleaner`.
+- **Structs use a single value class + `Inout<Struct>` extensions** (`+Structs.swift`, `Inout.kt`,
+  `SwiftCopyable.kt`): each struct emits one `class <Name> internal constructor(val obj: NSObject) :
+  SwiftCopyable` carrying the read-only surface — `val` getters, non-mutating methods, static methods
+  (companion), and `override fun copy()` (a per-struct `copy` thunk boxes a fresh value). Mutating
+  operations are **top-level extensions on `Inout<Name>`**: a settable property becomes
+  `var Inout<Name>.p`, a `mutating` method `fun Inout<Name>.m(…)`, a subscript setter
+  `operator fun Inout<Name>.set(…)`. Each mutation treats `self` as an **`inout Self` box cell**:
+  a shared `structMutationBlock` opens a `memScoped`, seeds a `self_slot` (`COpaquePointerVar`) from
+  `unsafeValue.__ptr()`, calls the thunk (`self_slot.ptr` last), and swaps the holder with
+  `unsafeValue = Name(wrapSwiftObject { self_slot.value })`. This is the **same `inoutThunk` mechanism
+  as any `inout` argument** — there is no separate struct-mutation thunk. Because `self` rides the cell
+  (not the return slot), a mutating method's return slot is free: **non-`Void` `mutating` methods
+  (scalar *or custom-type* return) and `mutating` methods that also take `inout` params are supported.**
+  A custom-type return is boxed by the thunk (`objectBoxExpr`) and re-wrapped on the Kotlin side
+  (`inoutResultCapture`), the same convention used for any `inout` function returning a custom type.
+  - `Inout<T>` is the uniform mutable/`inout` holder: `value` copies on read and write (via
+    `SwiftCopyable.copy()`) to preserve value semantics; `unsafeValue` is the no-copy accessor used by
+    the generated marshalling. For a non-copyable `T` (primitive / class wrapper) the copy is a no-op,
+    so `Inout<T>` is a plain box. Constructing `Inout(point)` copies, so mutating the holder never
+    touches the caller's original value.
+  - A settable **custom-type field** gets two mutation extensions on `Inout<Rect>` (nested mutation):
+    - a *connected* `val Inout<Rect>.topLeft: Inout<Point>` whose `onChange` re-embeds the point into
+      the parent, so `rect.topLeft.x = 3` mutates `rect` and chains up (each write re-boxes O(depth);
+      whole-field replace is `rect.topLeft.value = Point(…)`); and
+    - a scoped `fun Inout<Rect>.mutateTopLeft(block: Inout<Point>.() -> Unit)` that reads the field into
+      a fresh `Inout`, runs the block, and writes it back **once** (batched, no stale-alias hazard).
+    Both are verified end-to-end in the sample (`Point`/`Rectangle`, `Inout<…>` mutation, value
+    semantics, `recenter` `inout` param, connected + scoped nested mutation).
+  - **KNOWN LIMITATIONS (not yet fixed):** the connected `rect.topLeft.x = …` path snapshots the field,
+    so capturing it and mutating the parent elsewhere leaves it stale (aliasing; use `mutateTopLeft` to
+    avoid); `consuming` is not expressible; a **non-mutating** struct method that takes an `inout` param
+    is not surfaced (only `mutating` ones are); `String` returns from an `inout`/`mutating` function are
+    still skipped (custom-type and scalar returns are supported).
+  - Build caveat: the sample's Swift dylib is compiled from the SwiftPM build-plugin thunk output
+    (`.build/plugins/outputs/…`), which is **not** invalidated when the `swift-java` generator itself
+    changes — a stale copy there produces an ABI skew against the freshly regenerated cinterop header
+    (e.g. a setter's `self` compiled as a read-only `void*` while cinterop expects the mutable
+    `void* self_cell`), which crashes at runtime. After changing the generator, wipe
+    `Samples/KotlinNativeSampleApp/.build` before rebuilding.
+- Tests: `KotlinNativeTopLevelFunctionsTests.swift` and `KotlinNativeClassTests.swift` (incl. `inout`,
+  struct mutating methods/setters). Sample `macosArm64Test` exercises all `inout` shapes end-to-end.
 - Sample project: `Samples/KotlinNativeSampleApp` (macOS arm64 / `macosArm64`), depends on
-  `SwiftKitKN` for `SwiftHandle`; `ci-validate.sh` and `macosArm64Test` integration tests
-  (including a `Counter` class exercised end-to-end through cinterop).
+  `SwiftKitKN` for `SwiftHandle`/`Inout`/`SwiftCopyable`; `ci-validate.sh` and `macosArm64Test` integration tests
+  (including a `Counter` class and `Point` struct exercised end-to-end through cinterop).
 
 **Detailed design docs (in `.claude/`):**
 - `ClassImpl.md` — class/struct bridging across FFM/JNI/KN, the allocation tradeoff (host-allocates
@@ -274,6 +323,10 @@ layer**: generated Kotlin/Native wrappers call the Swift `@_cdecl` C thunks dire
 - Classes & structs are supported; enums, protocols, and generics are not. No collections or optionals.
 - Members are limited to primitive/`String`/custom-type parameters and returns (no subscripts; no
   throwing members that return a custom type). Failable inits are skipped.
+- `inout` parameters are supported for primitives and custom types (surfaced as `Inout<T>`), on
+  top-level functions and members; an `inout` function may return a scalar, `Void`, or a custom
+  type. `inout String`, `String` by-value parameters alongside `inout`, and `String` returns from an
+  `inout` function are skipped.
 - Pointer identity is not preserved (the same Swift object returned twice yields two wrappers — FFM
   parity, not a regression).
 - No function overload disambiguation yet.
