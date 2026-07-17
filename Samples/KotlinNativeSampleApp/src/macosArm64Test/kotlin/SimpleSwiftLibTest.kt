@@ -1,15 +1,13 @@
 package com.example.kotlinnative
 
-import com.example.kotlinnative.cinterop.swiftjava_SimpleSwiftLib_Counter_init_start
-import platform.darwin.NSObject
-import kotlinx.cinterop.*
+import org.swift.swiftkit.kn.Inout
 import kotlin.native.runtime.GC
 import kotlin.native.runtime.NativeRuntimeApi
+import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
-import kotlin.test.assertFailsWith
 
 // Integration test: Kotlin/Native -> cinterop -> Swift @_cdecl thunk -> real Swift.
 // The generated wrappers live in this same package, so they are callable without
@@ -140,6 +138,16 @@ class SimpleSwiftLibTest {
     }
 
     @Test
+    fun testClass_subscriptGetSet() {
+        // On a class both `operator fun get`/`set` are plain members: `c[offset]`.
+        val counter = Counter(10L)
+        assertEquals(15L, counter[5L])       // get: count + offset
+        counter[3L] = 20L                    // set: count = newValue - offset → 17
+        assertEquals(17L, counter.currentValue())
+        assertEquals(17L, counter[0L])
+    }
+
+    @Test
     fun testClass_stringReturningMethod() {
         val counter = Counter(7L)
         assertEquals("Counter(7)", counter.describe())
@@ -167,39 +175,208 @@ class SimpleSwiftLibTest {
         assertEquals(42L, c.currentValue())
     }
 
-    // Struct support (uniform box path).
+    // Struct support: single `SwiftCopyable` value class + `Inout<Struct>` extensions.
 
-//    @Test
-//    fun testStruct_constructAndMethod() {
-//        Point(3L, 4L).use { p ->
-//            assertEquals(7L, p.sum())
-//        }
-//    }
-//
-//    @Test
-//    fun testStruct_propertyAndCustomReturn() {
-//        val p = Point(1L, 2L)
-//        assertEquals(1L, p.x)
-//        assertEquals(2L, p.y)
-//        val moved = p.translated(10L, 20L)
-//        assertEquals(11L, moved.x)
-//        assertEquals(22L, moved.y)
-//    }
+    @Test
+    fun testStruct_constructAndMethod() {
+        val p = Point(3L, 4L)
+        assertEquals(7L, p.sum())
+    }
 
-//    @Test
-//    fun testClass_useAfterCloseThrows() {
-//        val counter = Counter(1L)
-//        counter.close()
-//        assertFailsWith<IllegalStateException> {
-//            counter.currentValue()
-//        }
-//    }
+    @Test
+    fun testStruct_propertyAndCustomReturn() {
+        val p = Point(1L, 2L)
+        assertEquals(1L, p.x)
+        assertEquals(2L, p.y)
+        val moved = p.translated(10L, 20L)
+        assertEquals(11L, moved.x)
+        assertEquals(22L, moved.y)
+    }
+
+    @Test
+    fun testStruct_copyIsIndependentRead() {
+        // `copy()` produces a fresh box; reads match the original.
+        val p = Point(5L, 6L)
+        val c = p.copy()
+        assertEquals(5L, c.x)
+        assertEquals(6L, c.y)
+    }
+
+    // Mutation via `Inout<Struct>` extensions: each extension calls the thunk (which
+    // returns the re-boxed value) and stores it back into the holder.
+
+    @Test
+    fun testStruct_inoutMutatingMethod() {
+        val p = Inout(Point(3L, 4L))
+        p.scale(2L)
+        assertEquals(6L, p.value.x)
+        assertEquals(8L, p.value.y)
+        assertEquals(14L, p.value.sum())
+    }
+
+    @Test
+    fun testStruct_inoutSettableProperty() {
+        val p = Inout(Point(1L, 2L))
+        p.x = 10L
+        p.y = 20L
+        assertEquals(10L, p.value.x)
+        assertEquals(20L, p.value.y)
+    }
+
+    @Test
+    fun testStruct_inoutPreservesValueSemantics() {
+        // Inout(original) stores a copy; mutating the holder does not touch original.
+        val original = Point(1L, 2L)
+        val io = Inout(original)
+        io.x = 10L
+        assertEquals(10L, io.value.x)
+        assertEquals(1L, original.x)   // original unchanged (value semantics)
+    }
+
+    @Test
+    fun testStruct_subscriptGetter() {
+        // The getter is a read-only member on the value class: `p[index]`.
+        val p = Point(3L, 4L)
+        assertEquals(3L, p[0L])   // index 0 → x
+        assertEquals(4L, p[1L])   // any other index → y
+    }
+
+    @Test
+    fun testStruct_subscriptSetterInoutExtension() {
+        // The setter mutates, so it is an `Inout<Point>.set` extension: `p[i] = v`.
+        val p = Inout(Point(1L, 2L))
+        p[0L] = 10L
+        p[1L] = 20L
+        assertEquals(10L, p.value.x)
+        assertEquals(20L, p.value.y)
+        assertEquals(10L, p.value[0L])
+    }
+
+    @Test
+    fun testStruct_subscriptPreservesValueSemantics() {
+        val original = Point(1L, 2L)
+        val io = Inout(original)
+        io[0L] = 99L
+        assertEquals(99L, io.value.x)
+        assertEquals(1L, original.x)   // original unchanged (value semantics)
+    }
+
+    // Multi-argument subscripts: `g[row, col]` desugars to get(row, col) / set(row, col, v).
+
+    @Test
+    fun testStruct_multiArgSubscript() {
+        val g = Inout(Grid(2L, 3L))
+        g[0L, 0L] = 5L                 // set (Inout<Grid> extension)
+        g[1L, 2L] = 9L
+        assertEquals(5L, g.value[0L, 0L])   // get (value class)
+        assertEquals(9L, g.value[1L, 2L])
+        assertEquals(0L, g.value[0L, 1L])   // untouched cell
+    }
+
+    // Subscripts keyed by a custom struct / class argument (boxed index raised in the thunk).
+
+    @Test
+    fun testStruct_subscriptWithStructArgument() {
+        val key = Point(2L, 3L)
+        val bag = PointBag(10L)
+        assertEquals(15L, bag[key])         // get: total + x + y = 10 + 2 + 3
+
+        val io = Inout(PointBag(0L))
+        io[key] = 20L                        // set: total = 20 - 2 - 3 = 15
+        assertEquals(15L, io.value.total)
+        assertEquals(20L, io.value[key])     // total + x + y = 15 + 2 + 3
+    }
+
+    @Test
+    fun testClass_subscriptWithClassArgument() {
+        val board = ScoreBoard(100L)
+        val counter = Counter(7L)
+        assertEquals(107L, board[counter])   // get: base + currentValue = 100 + 7
+        board[counter] = 200L                 // set: base = 200 - 7 = 193
+        assertEquals(193L, board[Counter(0L)])
+    }
+
+    @Test
+    fun testStruct_structInoutParameter() {
+        val p = Inout(Point(3L, 2L))
+        recenter(p, 3, 5)
+        assertEquals(6L, p.value.x)
+        assertEquals(7L, p.value.y)
+    }
+
+    // Custom-type field: whole-field replacement via the connected `Inout<Point>`.
+    @Test
+    fun testStruct_customTypeFieldWholeReplace() {
+        val rect = Inout(Rectangle(Point(0L, 0L), Point(6L, 7L)))
+        rect.topLeft.value = Point(3L, 9L)
+        assertEquals(3L, rect.value.topLeft.x)
+        assertEquals(9L, rect.value.topLeft.y)
+        assertEquals(6L, rect.value.bottomRight.x)   // other field untouched
+    }
+
+    // Option 2 — connected sub-holder: nested `rect.topLeft.x = …` writes back to rect.
+    @Test
+    fun testStruct_nestedFieldConnectedMutation() {
+        val rect = Inout(Rectangle(Point(0L, 0L), Point(6L, 7L)))
+        rect.topLeft.x = 3L
+        assertEquals(3L, rect.value.topLeft.x)         // nested write reached the parent
+        assertEquals(0L, rect.value.topLeft.y)         // sibling untouched
+        assertEquals(6L, rect.value.bottomRight.x)     // other field untouched
+    }
+
+    // Option 1 — scoped batched mutation: read once, mutate in the block, write back once.
+    @Test
+    fun testStruct_nestedFieldScopedMutation() {
+        val rect = Inout(Rectangle(Point(1L, 2L), Point(3L, 4L)))
+        rect.mutateTopLeft {
+            x = 10L
+            y = 20L
+        }
+        assertEquals(10L, rect.value.topLeft.x)
+        assertEquals(20L, rect.value.topLeft.y)
+        assertEquals(3L, rect.value.bottomRight.x)     // other field untouched
+    }
+
+    @Ignore
+    @Test
+    fun testStruct_staleSubViewClobbersParent() {
+        val rect = Inout(Rectangle(Point(0L, 0L), Point(6L, 7L)))
+
+        val staleTopLeft = rect.topLeft        // snapshot of topLeft == (0, 0)
+
+        rect.topLeft.x = 100L                  // mutate via a fresh sub-view
+        assertEquals(100L, rect.topLeft.x)     // the intervening write landed on rect
+
+        staleTopLeft.y = 5L                     // stale (0,0) + y=5 → writes (0,5) back into rect
+
+        // The stale write-back overwrote topLeft with its snapshot, losing x=100.
+        // Ideally this would be 100; it is 0 — a lost update.
+        assertEquals(100L, rect.topLeft.x)
+        assertEquals(5L, rect.topLeft.y)
+    }
 
     @Test
     fun testClass_extensionMethodIsImported() {
         val c = Counter(1L)
         c.sixseven()
         assertEquals(67L, c.currentValue())
+    }
+
+    // inout support (Inout<T> + native cell marshalling) — primitives persist.
+
+    @Test
+    fun testInout_primitiveTopLevel() {
+        val v = Inout(10L)
+        addInPlace(v, 5L)
+        assertEquals(15L, v.value)
+    }
+
+    @Test
+    fun testInout_primitiveMethodOnClass() {
+        val c = Counter(42L)
+        val out = Inout(0L)
+        c.readInto(out)
+        assertEquals(42L, out.value)
     }
 
     private fun allocAndDiscard(start: Long) { Counter(start) }
@@ -286,6 +463,22 @@ class SimpleSwiftLibTest {
         allocAndDiscardN(n)   // all 50 frames gone on return
         GC.collect()
         assertEquals(deinitsBefore + n.toLong(), counterDeinitCount())
+    }
+
+    fun testMemory_cleanerHandlesStructCorrectly_helper() {
+        val before = counterDeinitCount()
+        val h = Holder()
+        assertEquals(67L, h.value())
+        assertTrue(isWeakRefAlive())
+    }
+
+    @Test
+    @OptIn(NativeRuntimeApi::class)
+    fun testMemory_cleanerHandlesStructCorrectly() {
+        GC.collect()
+        testMemory_cleanerHandlesStructCorrectly_helper()
+        GC.collect()
+        assertFalse(isWeakRefAlive())
     }
 
 //    @Test

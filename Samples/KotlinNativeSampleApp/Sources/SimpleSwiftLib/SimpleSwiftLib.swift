@@ -125,6 +125,13 @@ public class Counter {
         return Counter(start: start)
     }
 
+    /// A read/write subscript on a *class* (reference `self`): exercises
+    /// `operator fun get`/`set` where both accessors are plain wrapper members.
+    public subscript(offset: Int) -> Int {
+        get { count + offset }
+        set { count = newValue - offset }
+    }
+
     /// Returns a new Counter holding the sum — exercises a custom type as both
     /// a parameter and a return value of an instance method.
     public func plus(other: Counter) -> Counter {
@@ -139,27 +146,119 @@ extension Counter {
 }
 
 /// A value type exercising the uniform box path for structs.
-// public struct Point {
-//     public var x: Int
-//     public var y: Int
-//
-//     public init(x: Int, y: Int) {
-//         self.x = x
-//         self.y = y
-//     }
-//
-//     public func sum() -> Int {
-//         return x + y
-//     }
-//
-//     public func translated(dx: Int, dy: Int) -> Point {
-//         return Point(x: x + dx, y: y + dy)
-//     }
-// }
+public struct Point {
+    public var x: Int
+    public var y: Int
+
+    public init(x: Int, y: Int) {
+        self.x = x
+        self.y = y
+    }
+
+    public func sum() -> Int {
+        return x + y
+    }
+
+    public func translated(dx: Int, dy: Int) -> Point {
+        return Point(x: x + dx, y: y + dy)
+    }
+
+    /// A `mutating` method: emitted on the `MutablePoint` view (in-place thunk).
+    public mutating func scale(by factor: Int) {
+        x *= factor
+        y *= factor
+    }
+
+    /// A read/write subscript on a *struct* (value semantics): the getter is a
+    /// read-only member on the value class, the setter an `Inout<Point>.set`
+    /// extension. Index 0 is `x`, any other index is `y`.
+    public subscript(index: Int) -> Int {
+        get { index == 0 ? x : y }
+        set {
+            if index == 0 { x = newValue } else { y = newValue }
+        }
+    }
+}
+
+public struct Rectangle {
+    public var topLeft: Point
+    public var bottomRight: Point
+
+    public init(_ topLeft: Point, _ bottomRight: Point) {
+        self.topLeft = topLeft
+        self.bottomRight = bottomRight
+    }
+}
+
+/// A value type with a **multi-argument** subscript (`row, col`): exercises the
+/// struct `structSwap` setter with more than one index argument.
+public struct Grid {
+    private var cells: [Int]
+    private let cols: Int
+
+    public init(rows: Int, cols: Int) {
+        self.cols = cols
+        self.cells = Array(repeating: 0, count: rows * cols)
+    }
+
+    public subscript(row: Int, col: Int) -> Int {
+        get { cells[row * cols + col] }
+        set { cells[row * cols + col] = newValue }
+    }
+}
+
+/// A value type whose subscript is keyed by a **custom struct** argument (`Point`):
+/// exercises raising a boxed struct index through the subscript thunk.
+public struct PointBag {
+    public var total: Int
+
+    public init(total: Int) {
+        self.total = total
+    }
+
+    public subscript(p: Point) -> Int {
+        get { total + p.x + p.y }
+        set { total = newValue - p.x - p.y }
+    }
+}
+
+/// A reference type whose subscript is keyed by a **custom class** argument
+/// (`Counter`): exercises raising a boxed class index through the subscript thunk.
+public class ScoreBoard {
+    private var base: Int
+
+    public init(base: Int) {
+        self.base = base
+    }
+
+    public subscript(counter: Counter) -> Int {
+        get { base + counter.currentValue() }
+        set { base = newValue - counter.currentValue() }
+    }
+}
 
 /// Top-level function taking and returning a custom type.
 public func combine(a: Counter, b: Counter) -> Counter {
     return Counter(start: a.currentValue() + b.currentValue())
+}
+
+/// Top-level function with a primitive `inout` parameter.
+public func addInPlace(value: inout Int, by amount: Int) {
+    value += amount
+}
+
+/// Top-level function with a custom-type `inout` parameter: replaces the value
+/// with a translated copy — exercises the `void**` box round-trip.
+public func recenter(point: inout Point, dx: Int, dy: Int) {
+    point = point.translated(dx: dx, dy: dy)
+}
+
+/// Instance method with a primitive `inout` parameter on a *class* (non-mutable
+/// `self`): writes the current value out through `out`.
+extension Counter {
+    public func readInto(out: inout Int) {
+        out = currentValue()
+    }
 }
 
 // A persistent Swift-side strong reference, used to prove that an object stays
@@ -201,14 +300,19 @@ public func isWeakRefAlive() -> Bool {
 /// A value type holding a *reference* member, so that destroying a `Holder` box
 /// must release its `counter` — exercises the struct branch of the `_destroy`
 /// thunk (`deinitialize` releasing reference-typed fields, not just freeing bytes).
-// public struct Holder {
-//     public let counter: Counter
-//
-//     public init(counter: Counter) {
-//         self.counter = counter
-//     }
-//
-//     public func value() -> Int {
-//         return counter.currentValue()
-//     }
-// }
+public struct Holder {
+    public let counter: Counter
+
+    public init(counter: Counter) {
+        self.counter = counter
+    }
+
+    public init() {
+        self.counter = Counter(start: 67)
+        storeWeakRef(to: counter)
+    }
+
+    public func value() -> Int {
+        return counter.currentValue()
+    }
+}

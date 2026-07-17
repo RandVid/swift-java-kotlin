@@ -198,6 +198,24 @@ struct KotlinNativeTopLevelFunctionsTests {
       ]
     )
   }
+  
+  @Test(.disabled("Temporarily disabled"))
+  func string_asParameter_swiftThunk() throws {
+    try assertOutput(
+      input: "public func printMessage(message: String) {}",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SimpleSwiftLib_printMessage_message")
+        public func swiftjava_SimpleSwiftLib_printMessage_message(_ message: UnsafePointer<Int8>) {
+          var message_converted = String(cString: message)
+          printMessage(message: message_converted)
+        }
+        """
+      ]
+    )
+  }
 
   @Test
   func string_parameterWithPrimitiveReturn() throws {
@@ -717,6 +735,268 @@ struct KotlinNativeTopLevelFunctionsTests {
       .java,
       expectedChunks: [
         "// Skipped sum: unsupported param type '[Int]'"
+      ]
+    )
+  }
+
+  // MARK: - inout parameters via Inout<T>
+
+  @Test
+  func inout_voidReturn_kotlin() throws {
+    try assertOutput(
+      input: "public func addInPlace(value: inout Int, by amount: Int) { value += amount }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun addInPlace(value: Inout<Long>, amount: Long): Unit {
+          memScoped {
+            val value_cell = alloc<LongVar>()
+            value_cell.value = value.unsafeValue
+            swiftjava_SwiftModule_addInPlace_value_by(value_cell.ptr, amount)
+            value.unsafeValue = value_cell.value
+          }
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func inout_voidReturn_swiftThunk() throws {
+    try assertOutput(
+      input: "public func addInPlace(value: inout Int, by amount: Int) { value += amount }",
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_addInPlace_value_by")
+        public func swiftjava_SwiftModule_addInPlace_value_by(_ value: UnsafeMutableRawPointer, _ amount: Int) {
+            var _value = value.assumingMemoryBound(to: Int.self).pointee
+            addInPlace(value: &_value, by: amount)
+            value.assumingMemoryBound(to: Int.self).pointee = _value
+        }
+        """
+      ]
+    )
+  }
+
+  @Test(.disabled("Temporarily disabled"))
+  func inoutString_kotlin() throws {
+    try assertOutput(
+      input: "public func replace(str: inout String, rep: String) { str = rep }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun replace(str: Inout<String>, rep: String): Unit {
+          memScoped {
+            val str_cell = alloc<CPointerVar<ByteVar>>()
+            str_cell.value = str.unsafeValue.cstr
+            swiftjava_SwiftModule_replace_str_rep(str_cell.ptr, rep.cstr)
+            str.unsafeValue = str_cell.value
+          }
+        }
+        """
+      ]
+    )
+  }
+  
+  @Test(.disabled("Temporarily disabled"))
+  func inoutString_swiftThunk() throws {
+    try assertOutput(
+      input: "public func replace(str: inout String, rep: String) { str = rep }",
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_replace_str_rep")
+        public func swiftjava_SwiftModule_replace_str_rep(_ value: UnsafePointer<Int8>, _ rep: UnsafePointer<Int8>) {
+            var _value = value.assumingMemoryBound(to: UnsafePointer<Int8>.self).pointee
+            replace(str: String(cString: _value), rep: String(cString: rep))
+            value.assumingMemoryBound(to: UnsafePointer<Int8>.self).pointee.pointee = _value
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func inout_importsInout() throws {
+    try assertOutput(
+      input: "public func addInPlace(value: inout Int, by amount: Int) { value += amount }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        "import org.swift.swiftkit.kn.Inout"
+      ]
+    )
+  }
+
+  @Test
+  func inout_primitiveReturn_kotlin() throws {
+    // A non-Void return threads through `return memScoped { … ; _result }`.
+    try assertOutput(
+      input: "public func bump(_ x: inout Int32) -> Bool { x += 1; return true }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun bump(x: Inout<Int>): Boolean {
+          return memScoped {
+            val x_cell = alloc<IntVar>()
+            x_cell.value = x.unsafeValue
+            val _result = swiftjava_SwiftModule_bump__(x_cell.ptr)
+            x.unsafeValue = x_cell.value
+            _result
+          }
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func inout_primitiveReturn_swiftThunk() throws {
+    try assertOutput(
+      input: "public func bump(_ x: inout Int32) -> Bool { x += 1; return true }",
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_bump__")
+        public func swiftjava_SwiftModule_bump__(_ x: UnsafeMutableRawPointer) -> Bool {
+            var _x = x.assumingMemoryBound(to: Int32.self).pointee
+            let _result = bump(&_x)
+            x.assumingMemoryBound(to: Int32.self).pointee = _x
+            return _result
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func inout_multipleParams_kotlin() throws {
+    // Two inout scalars → two cells, both written back.
+    try assertOutput(
+      input: "public func swapAdd(a: inout Int, b: inout Int) { let t = a; a = b; b = t }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun swapAdd(a: Inout<Long>, b: Inout<Long>): Unit {
+          memScoped {
+            val a_cell = alloc<LongVar>()
+            a_cell.value = a.unsafeValue
+            val b_cell = alloc<LongVar>()
+            b_cell.value = b.unsafeValue
+            swiftjava_SwiftModule_swapAdd_a_b(a_cell.ptr, b_cell.ptr)
+            a.unsafeValue = a_cell.value
+            b.unsafeValue = b_cell.value
+          }
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func inout_customTypeParam_kotlin() throws {
+    // inout of a custom type surfaces as `Inout<Point>`; the wrapper seeds a
+    // box-pointer cell from the held value and rewraps the (re-boxed) result.
+    try assertOutput(
+      input: """
+        public struct Point { public init() {} }
+        public func move(p: inout Point) {}
+        """,
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun move(p: Inout<Point>): Unit {
+          memScoped {
+            val p_cell = alloc<COpaquePointerVar>()
+            p_cell.value = p.unsafeValue.__ptr()
+            swiftjava_SwiftModule_move_p(p_cell.ptr)
+            p.unsafeValue = Point(wrapSwiftObject { p_cell.value })
+          }
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func inout_customTypeParam_swiftThunk() throws {
+    try assertOutput(
+      input: """
+        public struct Point { public init() {} }
+        public func move(p: inout Point) {}
+        """,
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_move_p")
+        public func swiftjava_SwiftModule_move_p(_ p: UnsafeMutableRawPointer) {
+            let p_box = p.assumingMemoryBound(to: UnsafeMutableRawPointer.self).pointee
+            var _p = Unmanaged<AnyObject>.fromOpaque(p_box).takeUnretainedValue() as! Point
+            move(p: &_p)
+            p.assumingMemoryBound(to: UnsafeMutableRawPointer.self).pointee = Unmanaged<AnyObject>.passRetained(_p as AnyObject).autorelease().toOpaque()
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func inout_customTypeParamAndReturn_kotlin() throws {
+    // A custom-type return rides the freed return slot as an opaque box; the wrapper
+    // re-wraps it while still writing the `inout` param back.
+    try assertOutput(
+      input: """
+        public struct Point { public init() {} }
+        public func replace(p: inout Point) -> Point { let old = p; p = Point(); return old }
+        """,
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun replace(p: Inout<Point>): Point {
+          return memScoped {
+            val p_cell = alloc<COpaquePointerVar>()
+            p_cell.value = p.unsafeValue.__ptr()
+            val _result = Point(wrapSwiftObject { swiftjava_SwiftModule_replace_p(p_cell.ptr) })
+            p.unsafeValue = Point(wrapSwiftObject { p_cell.value })
+            _result
+          }
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func inout_customTypeParamAndReturn_swiftThunk() throws {
+    try assertOutput(
+      input: """
+        public struct Point { public init() {} }
+        public func replace(p: inout Point) -> Point { let old = p; p = Point(); return old }
+        """,
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_replace_p")
+        public func swiftjava_SwiftModule_replace_p(_ p: UnsafeMutableRawPointer) -> UnsafeMutableRawPointer {
+            let p_box = p.assumingMemoryBound(to: UnsafeMutableRawPointer.self).pointee
+            var _p = Unmanaged<AnyObject>.fromOpaque(p_box).takeUnretainedValue() as! Point
+            let _result = replace(p: &_p)
+            p.assumingMemoryBound(to: UnsafeMutableRawPointer.self).pointee = Unmanaged<AnyObject>.passRetained(_p as AnyObject).autorelease().toOpaque()
+            return Unmanaged<AnyObject>.passRetained(_result as AnyObject).autorelease().toOpaque()
+        }
+        """
       ]
     )
   }

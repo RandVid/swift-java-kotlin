@@ -173,7 +173,7 @@ struct KotlinNativeClassTests {
         """
         @_cdecl("swiftjava_SwiftModule_Counter_add_x")
         public func swiftjava_SwiftModule_Counter_add_x(_ x: Int, _ self: UnsafeRawPointer) -> Int {
-          return Unmanaged<Counter>.fromOpaque(self).takeUnretainedValue().add(x: x)
+          return (Unmanaged<AnyObject>.fromOpaque(self).takeUnretainedValue() as! Counter).add(x: x)
         }
         """
       ]
@@ -332,10 +332,12 @@ struct KotlinNativeClassTests {
       )
     }
 
-  // MARK: - Struct (uniform box path)
+  // MARK: - Struct (two-class value-semantics model: immutable + Mutable)
 
   @Test
-  func struct_wrapperAndMethod_kotlin() throws {
+  func struct_valueClass_kotlin() throws {
+    // A struct emits a single `SwiftCopyable` value class with getters, a non-mutating
+    // method, and an overridden `copy()`. Mutating operations are `Inout<…>` extensions.
     try assertOutput(
       input: """
         public struct Point {
@@ -346,13 +348,72 @@ struct KotlinNativeClassTests {
       .kotlinNative,
       .java,
       expectedChunks: [
-        """
-        class Point internal constructor(private val __obj: NSObject) {
-        """,
+        "class Point internal constructor(val obj: NSObject) : SwiftCopyable {",
+        "internal fun __ptr(): COpaquePointer = interpretCPointer<CPointed>(obj.objcPtr())!!",
         """
         fun sum(): Long {
           return swiftjava_SwiftModule_Point_sum(__ptr())
         }
+        """,
+        "override fun copy(): Point = Point(wrapSwiftObject { swiftjava_SwiftModule_Point_copy(__ptr()) })",
+      ],
+      notExpectedChunks: [
+        "class MutablePoint",
+        "unsafeAsMutable",
+        "mutatingCopy",
+      ]
+    )
+  }
+
+  @Test
+  func struct_settablePropertyInoutExtension_kotlin() throws {
+    // A settable stored `var` becomes an `Inout<Point>.x` extension property: it
+    // reads the held value and writes by calling the setter thunk (which returns the
+    // re-boxed value) and storing it back.
+    try assertOutput(
+      input: """
+        public struct Point {
+          public var x: Int
+          public init(x: Int) { self.x = x }
+        }
+        """,
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        var Inout<Point>.x: Long
+          get() = unsafeValue.x
+          set(value) {
+            memScoped {
+              val self_slot = alloc<COpaquePointerVar>()
+              self_slot.value = unsafeValue.__ptr()
+              swiftjava_SwiftModule_Point_x_kn_set(value, self_slot.ptr)
+              unsafeValue = Point(wrapSwiftObject { self_slot.value })
+            }
+          }
+        """,
+      ]
+    )
+  }
+
+  @Test
+  func struct_immutableClassPropertyIsReadOnly_kotlin() throws {
+    // The immutable class exposes the stored property as a read-only `val`.
+    try assertOutput(
+      input: """
+        public struct Point {
+          public var x: Int
+          public init(x: Int) { self.x = x }
+        }
+        """,
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        val x: Long
+          get() {
+            return swiftjava_SwiftModule_Point_x_kn_get(__ptr())
+          }
         """
       ]
     )
@@ -374,6 +435,391 @@ struct KotlinNativeClassTests {
             let _result = Point(x: x, y: y) as AnyObject
             return Unmanaged<AnyObject>.passRetained(_result).autorelease().toOpaque()
         }
+        """
+      ]
+    )
+  }
+
+  // MARK: - Struct value semantics: re-box + `obj` swap + copy thunks
+  //
+  // A struct is boxed by value in a frozen `__SwiftValue`. Setters and `mutating`
+  // methods live on the Mutable view; their thunk raises `self`, mutates a local,
+  // and returns a freshly re-boxed value. The Mutable wrapper (a normal class with
+  // `var obj`) swaps `obj` to that new box, so the mutation persists on the
+  // instance. `copy()` boxes a fresh independent value.
+
+  @Test
+  func struct_setterThunk_swap_swift() throws {
+    try assertOutput(
+      input: """
+        public struct Point {
+          public var x: Int
+          public init(x: Int) { self.x = x }
+        }
+        """,
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_Point_x_kn_set")
+        public func swiftjava_SwiftModule_Point_x_kn_set(_ newValue: Int, _ self: UnsafeMutableRawPointer) {
+            let self_box = self.assumingMemoryBound(to: UnsafeMutableRawPointer.self).pointee
+            var _self = Unmanaged<AnyObject>.fromOpaque(self_box).takeUnretainedValue() as! Point
+            _self.x = newValue
+            self.assumingMemoryBound(to: UnsafeMutableRawPointer.self).pointee = Unmanaged<AnyObject>.passRetained(_self as AnyObject).autorelease().toOpaque()
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func struct_mutatingMethod_inoutExtension_kotlin() throws {
+    // A `mutating` method is emitted as an `Inout<Point>` extension: it calls the
+    // thunk (which returns the re-boxed value) and stores it back into the holder.
+    try assertOutput(
+      input: """
+        public struct Point {
+          public var x: Int
+          public init(x: Int) { self.x = x }
+          public mutating func bump() { x += 1 }
+        }
+        """,
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun Inout<Point>.bump() {
+          memScoped {
+            val self_slot = alloc<COpaquePointerVar>()
+            self_slot.value = unsafeValue.__ptr()
+            swiftjava_SwiftModule_Point_bump(self_slot.ptr)
+            unsafeValue = Point(wrapSwiftObject { self_slot.value })
+          }
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func struct_mutatingMethod_swap_swift() throws {
+    try assertOutput(
+      input: """
+        public struct Point {
+          public var x: Int
+          public init(x: Int) { self.x = x }
+          public mutating func bump() { x += 1 }
+        }
+        """,
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_Point_bump")
+        public func swiftjava_SwiftModule_Point_bump(_ self: UnsafeMutableRawPointer) {
+            let self_box = self.assumingMemoryBound(to: UnsafeMutableRawPointer.self).pointee
+            var _self = Unmanaged<AnyObject>.fromOpaque(self_box).takeUnretainedValue() as! Point
+            _self.bump()
+            self.assumingMemoryBound(to: UnsafeMutableRawPointer.self).pointee = Unmanaged<AnyObject>.passRetained(_self as AnyObject).autorelease().toOpaque()
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func struct_customTypeField_connectedInoutAndMutate_kotlin() throws {
+    // A settable custom-type field gets two mutation extensions on `Inout<Rect>`:
+    //  - a *connected* `Inout<Point>` getter (nested `rect.topLeft.x = …` writes
+    //    back through the parent), and
+    //  - a scoped `mutateTopLeft { … }` that batches edits into one write-back.
+    try assertOutput(
+      input: """
+        public struct Point {
+          public var x: Int
+          public init(x: Int) { self.x = x }
+        }
+        public struct Rect {
+          public var topLeft: Point
+          public init(topLeft: Point) { self.topLeft = topLeft }
+        }
+        """,
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        val Inout<Rect>.topLeft: Inout<Point>
+          get() = Inout(unsafeValue.topLeft) { newValue ->
+            memScoped {
+              val self_slot = alloc<COpaquePointerVar>()
+              self_slot.value = unsafeValue.__ptr()
+              swiftjava_SwiftModule_Rect_topLeft_kn_set(newValue.__ptr(), self_slot.ptr)
+              unsafeValue = Rect(wrapSwiftObject { self_slot.value })
+            }
+          }
+        """,
+        """
+        fun Inout<Rect>.mutateTopLeft(block: Inout<Point>.() -> Unit) {
+          val field = Inout(unsafeValue.topLeft)
+          field.block()
+          memScoped {
+            val self_slot = alloc<COpaquePointerVar>()
+            self_slot.value = unsafeValue.__ptr()
+            swiftjava_SwiftModule_Rect_topLeft_kn_set(field.unsafeValue.__ptr(), self_slot.ptr)
+            unsafeValue = Rect(wrapSwiftObject { self_slot.value })
+          }
+        }
+        """,
+      ]
+    )
+  }
+
+  @Test
+  func struct_copyThunk_swift() throws {
+    try assertOutput(
+      input: """
+        public struct Point {
+          public var x: Int
+          public init(x: Int) { self.x = x }
+        }
+        """,
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_Point_copy")
+        public func swiftjava_SwiftModule_Point_copy(_ self: UnsafeRawPointer) -> UnsafeMutableRawPointer {
+            let _result = (Unmanaged<AnyObject>.fromOpaque(self).takeUnretainedValue() as! Point) as AnyObject
+            return Unmanaged<AnyObject>.passRetained(_result).autorelease().toOpaque()
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func struct_nonMutatingMethod_isEmitted_swiftThunk() throws {
+    // A non-mutating method reads an immutable copy raised from the box (no swap).
+    try assertOutput(
+      input: """
+        public struct Point {
+          public var x: Int
+          public init(x: Int) { self.x = x }
+          public func peek() -> Int { x }
+        }
+        """,
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_Point_peek")
+        public func swiftjava_SwiftModule_Point_peek(_ self: UnsafeRawPointer) -> Int {
+          return (Unmanaged<AnyObject>.fromOpaque(self).takeUnretainedValue() as! Point).peek()
+        }
+        """
+      ]
+    )
+  }
+
+  // MARK: - Struct mutations unlocked by the box-cell `self` (return slot is free)
+
+  @Test
+  func struct_nonVoidMutatingMethod_kotlin() throws {
+    // With `self` carried by the box cell, a `mutating` method's return slot is free
+    // for its own (scalar) result, so non-`Void` mutating methods are supported.
+    try assertOutput(
+      input: """
+        public struct Counter {
+          public var n: Int
+          public init(n: Int) { self.n = n }
+          public mutating func next() -> Int { n += 1; return n }
+        }
+        """,
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun Inout<Counter>.next(): Long {
+          return memScoped {
+            val self_slot = alloc<COpaquePointerVar>()
+            self_slot.value = unsafeValue.__ptr()
+            val _result = swiftjava_SwiftModule_Counter_next(self_slot.ptr)
+            unsafeValue = Counter(wrapSwiftObject { self_slot.value })
+            _result
+          }
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func struct_nonVoidMutatingMethod_swiftThunk() throws {
+    try assertOutput(
+      input: """
+        public struct Counter {
+          public var n: Int
+          public init(n: Int) { self.n = n }
+          public mutating func next() -> Int { n += 1; return n }
+        }
+        """,
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_Counter_next")
+        public func swiftjava_SwiftModule_Counter_next(_ self: UnsafeMutableRawPointer) -> Int {
+            let self_box = self.assumingMemoryBound(to: UnsafeMutableRawPointer.self).pointee
+            var _self = Unmanaged<AnyObject>.fromOpaque(self_box).takeUnretainedValue() as! Counter
+            let _result = _self.next()
+            self.assumingMemoryBound(to: UnsafeMutableRawPointer.self).pointee = Unmanaged<AnyObject>.passRetained(_self as AnyObject).autorelease().toOpaque()
+            return _result
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func struct_mutatingMethodWithInoutParam_kotlin() throws {
+    // A `mutating` method that also takes an `inout` param: both `self` and the
+    // param ride box/scalar cells and are written back.
+    try assertOutput(
+      input: """
+        public struct Point {
+          public var x: Int
+          public init(x: Int) { self.x = x }
+          public mutating func adjust(delta: inout Int) { x += delta; delta = x }
+        }
+        """,
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun Inout<Point>.adjust(delta: Inout<Long>) {
+          memScoped {
+            val delta_cell = alloc<LongVar>()
+            delta_cell.value = delta.unsafeValue
+            val self_slot = alloc<COpaquePointerVar>()
+            self_slot.value = unsafeValue.__ptr()
+            swiftjava_SwiftModule_Point_adjust_delta(delta_cell.ptr, self_slot.ptr)
+            delta.unsafeValue = delta_cell.value
+            unsafeValue = Point(wrapSwiftObject { self_slot.value })
+          }
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func struct_mutatingMethodWithInoutParam_swiftThunk() throws {
+    try assertOutput(
+      input: """
+        public struct Point {
+          public var x: Int
+          public init(x: Int) { self.x = x }
+          public mutating func adjust(delta: inout Int) { x += delta; delta = x }
+        }
+        """,
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_Point_adjust_delta")
+        public func swiftjava_SwiftModule_Point_adjust_delta(_ delta: UnsafeMutableRawPointer, _ self: UnsafeMutableRawPointer) {
+            var _delta = delta.assumingMemoryBound(to: Int.self).pointee
+            let self_box = self.assumingMemoryBound(to: UnsafeMutableRawPointer.self).pointee
+            var _self = Unmanaged<AnyObject>.fromOpaque(self_box).takeUnretainedValue() as! Point
+            _self.adjust(delta: &_delta)
+            delta.assumingMemoryBound(to: Int.self).pointee = _delta
+            self.assumingMemoryBound(to: UnsafeMutableRawPointer.self).pointee = Unmanaged<AnyObject>.passRetained(_self as AnyObject).autorelease().toOpaque()
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func struct_mutatingMethodReturningCustomType_kotlin() throws {
+    // The freed return slot also carries a custom-type result: the thunk hands back
+    // an opaque box and the wrapper re-wraps it (`Token(wrapSwiftObject { … })`),
+    // independently of the `self` write-back.
+    try assertOutput(
+      input: """
+        public struct Token { public init() {} }
+        public struct Point {
+          public var x: Int
+          public init(x: Int) { self.x = x }
+          public mutating func advance() -> Token { x += 1; return Token() }
+        }
+        """,
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        fun Inout<Point>.advance(): Token {
+          return memScoped {
+            val self_slot = alloc<COpaquePointerVar>()
+            self_slot.value = unsafeValue.__ptr()
+            val _result = Token(wrapSwiftObject { swiftjava_SwiftModule_Point_advance(self_slot.ptr) })
+            unsafeValue = Point(wrapSwiftObject { self_slot.value })
+            _result
+          }
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func struct_mutatingMethodReturningCustomType_swiftThunk() throws {
+    try assertOutput(
+      input: """
+        public struct Token { public init() {} }
+        public struct Point {
+          public var x: Int
+          public init(x: Int) { self.x = x }
+          public mutating func advance() -> Token { x += 1; return Token() }
+        }
+        """,
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_Point_advance")
+        public func swiftjava_SwiftModule_Point_advance(_ self: UnsafeMutableRawPointer) -> UnsafeMutableRawPointer {
+            let self_box = self.assumingMemoryBound(to: UnsafeMutableRawPointer.self).pointee
+            var _self = Unmanaged<AnyObject>.fromOpaque(self_box).takeUnretainedValue() as! Point
+            let _result = _self.advance()
+            self.assumingMemoryBound(to: UnsafeMutableRawPointer.self).pointee = Unmanaged<AnyObject>.passRetained(_self as AnyObject).autorelease().toOpaque()
+            return Unmanaged<AnyObject>.passRetained(_result as AnyObject).autorelease().toOpaque()
+        }
+        """
+      ]
+    )
+  }
+
+  @Test
+  func class_settableStoredProperty_mutatesInPlace_kotlin() throws {
+    // Contrast: a class has reference semantics — the setter mutates through the
+    // box pointer directly (`__ptr()`), no re-box/swap, and `__obj` stays `val`.
+    try assertOutput(
+      input: """
+        public class Point {
+          public var x: Int
+          public init(x: Int) { self.x = x }
+        }
+        """,
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        "class Point internal constructor(private val __obj: NSObject) {",
+        """
+        set(value) {
+            swiftjava_SwiftModule_Point_x_kn_set(value, __ptr())
+          }
         """
       ]
     )
@@ -453,7 +899,7 @@ struct KotlinNativeClassTests {
         """
         @_cdecl("swiftjava_SwiftModule_useBox_box")
         public func swiftjava_SwiftModule_useBox_box(_ box: UnsafeRawPointer) -> Int {
-          return useBox(box: Unmanaged<Box>.fromOpaque(box).takeUnretainedValue())
+          return useBox(box: (Unmanaged<AnyObject>.fromOpaque(box).takeUnretainedValue() as! Box))
         }
         """
       ]
@@ -499,7 +945,7 @@ struct KotlinNativeClassTests {
         """
         @_cdecl("swiftjava_SwiftModule_Parent_child_kn_get")
         public func swiftjava_SwiftModule_Parent_child_kn_get(_ self: UnsafeRawPointer) -> UnsafeMutableRawPointer {
-            let _result = Unmanaged<Parent>.fromOpaque(self).takeUnretainedValue().child as AnyObject
+            let _result = (Unmanaged<AnyObject>.fromOpaque(self).takeUnretainedValue() as! Parent).child as AnyObject
             return Unmanaged<AnyObject>.passRetained(_result).autorelease().toOpaque()
         }
         """
@@ -587,9 +1033,9 @@ struct KotlinNativeClassTests {
   }
 
   @Test
-  func inoutParameterMethod_isSkipped() throws {
-    // `Int` maps via swiftTypeToKotlin, but an `inout` parameter cannot be
-    // C-lowered, so the member must be skipped on every artifact (issue #3).
+  func inoutParameterMethod_kotlin() throws {
+    // A class method with an `inout Int` parameter surfaces as `Inout<Long>`, with
+    // the value marshalled through a native cell (self is a non-mutable class box).
     try assertOutput(
       input: """
         public class Box {
@@ -599,13 +1045,23 @@ struct KotlinNativeClassTests {
         """,
       .kotlinNative,
       .java,
-      expectedChunks: [],
-      notExpectedChunks: ["fun scale", "swiftjava_SwiftModule_Box_scale"]
+      expectedChunks: [
+        """
+        fun scale(x: Inout<Long>): Unit {
+          memScoped {
+            val x_cell = alloc<LongVar>()
+            x_cell.value = x.unsafeValue
+            swiftjava_SwiftModule_Box_scale_x(x_cell.ptr, __ptr())
+            x.unsafeValue = x_cell.value
+          }
+        }
+        """
+      ]
     )
   }
 
   @Test
-  func inoutParameterMethod_noSwiftThunk() throws {
+  func inoutParameterMethod_swiftThunk() throws {
     try assertOutput(
       input: """
         public class Box {
@@ -615,8 +1071,17 @@ struct KotlinNativeClassTests {
         """,
       .kotlinNative,
       .swift,
-      expectedChunks: [],
-      notExpectedChunks: ["swiftjava_SwiftModule_Box_scale"]
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_Box_scale_x")
+        public func swiftjava_SwiftModule_Box_scale_x(_ x: UnsafeMutableRawPointer, _ self: UnsafeRawPointer) {
+            var _x = x.assumingMemoryBound(to: Int.self).pointee
+            let _self = Unmanaged<AnyObject>.fromOpaque(self).takeUnretainedValue() as! Box
+            _self.scale(x: &_x)
+            x.assumingMemoryBound(to: Int.self).pointee = _x
+        }
+        """
+      ]
     )
   }
 
@@ -638,7 +1103,7 @@ struct KotlinNativeClassTests {
       .kotlinNative,
       .java,
       expectedChunks: [
-        "class Outer_Box internal constructor(private val __obj: NSObject) {",
+        "class Outer_Box internal constructor(val obj: NSObject) : SwiftCopyable {",
         "constructor() : this(wrapSwiftObject { swiftjava_SwiftModule_Outer_Box_init() })",
       ]
     )
@@ -667,6 +1132,232 @@ struct KotlinNativeClassTests {
             return Unmanaged<AnyObject>.passRetained(_result).autorelease().toOpaque()
         }
         """
+      ]
+    )
+  }
+  // MARK: - Class subscript
+
+  @Test
+  func classSubscript_getSet_kotlin() throws {
+    try assertOutput(
+      input: """
+        public class IntBox {
+          public init() {}
+          public subscript(index: Int) -> Int {
+            get { 0 }
+            set {}
+          }
+        }
+        """,
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        operator fun get(index: Long): Long {
+          return swiftjava_SwiftModule_IntBox_subscript_kn_get(index, __ptr())
+        }
+        """,
+        """
+        operator fun set(index: Long, newValue: Long) {
+          swiftjava_SwiftModule_IntBox_subscript_kn_set(index, newValue, __ptr())
+        }
+        """,
+      ]
+    )
+  }
+
+  @Test
+  func classSubscript_getterThunk_swift() throws {
+    try assertOutput(
+      input: """
+        public class IntBox {
+          public init() {}
+          public subscript(index: Int) -> Int { get { 0 } set {} }
+        }
+        """,
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_IntBox_subscript_kn_get")
+        public func swiftjava_SwiftModule_IntBox_subscript_kn_get(_ index: Int, _ self: UnsafeRawPointer) -> Int {
+          return (Unmanaged<AnyObject>.fromOpaque(self).takeUnretainedValue() as! IntBox)[index]
+        }
+        """,
+      ]
+    )
+  }
+
+  @Test
+  func classSubscript_setterThunk_swift() throws {
+    try assertOutput(
+      input: """
+        public class IntBox {
+          public init() {}
+          public subscript(index: Int) -> Int { get { 0 } set {} }
+        }
+        """,
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_IntBox_subscript_kn_set")
+        public func swiftjava_SwiftModule_IntBox_subscript_kn_set(_ index: Int, _ newValue: Int, _ self: UnsafeRawPointer) {
+          (Unmanaged<AnyObject>.fromOpaque(self).takeUnretainedValue() as! IntBox)[index] = newValue
+        }
+        """,
+      ]
+    )
+  }
+
+  // MARK: - Struct subscript
+
+  @Test
+  func structSubscript_getter_kotlin() throws {
+    // The getter is a read-only `operator fun get` on the value class.
+    try assertOutput(
+      input: """
+        public struct IntArray {
+          public init() {}
+          public subscript(index: Int) -> Int { get { 0 } set {} }
+        }
+        """,
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        operator fun get(index: Long): Long {
+          return swiftjava_SwiftModule_IntArray_subscript_kn_get(index, __ptr())
+        }
+        """,
+      ]
+    )
+  }
+
+  @Test
+  func structSubscript_setterInoutExtension_kotlin() throws {
+    // The mutating setter is an `Inout<IntArray>.set` extension: call the swap thunk
+    // (which returns the re-boxed value) and store it back into the holder.
+    try assertOutput(
+      input: """
+        public struct IntArray {
+          public init() {}
+          public subscript(index: Int) -> Int { get { 0 } set {} }
+        }
+        """,
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        operator fun Inout<IntArray>.set(index: Long, newValue: Long) {
+          memScoped {
+            val self_slot = alloc<COpaquePointerVar>()
+            self_slot.value = unsafeValue.__ptr()
+            swiftjava_SwiftModule_IntArray_subscript_kn_set(index, newValue, self_slot.ptr)
+            unsafeValue = IntArray(wrapSwiftObject { self_slot.value })
+          }
+        }
+        """,
+      ]
+    )
+  }
+
+  @Test
+  func structSubscript_setterThunk_swap_swift() throws {
+    try assertOutput(
+      input: """
+        public struct IntArray {
+          public init() {}
+          public subscript(index: Int) -> Int { get { 0 } set {} }
+        }
+        """,
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        @_cdecl("swiftjava_SwiftModule_IntArray_subscript_kn_set")
+        public func swiftjava_SwiftModule_IntArray_subscript_kn_set(_ index: Int, _ newValue: Int, _ self: UnsafeMutableRawPointer) {
+            let self_box = self.assumingMemoryBound(to: UnsafeMutableRawPointer.self).pointee
+            var _self = Unmanaged<AnyObject>.fromOpaque(self_box).takeUnretainedValue() as! IntArray
+            _self[index] = newValue
+            self.assumingMemoryBound(to: UnsafeMutableRawPointer.self).pointee = Unmanaged<AnyObject>.passRetained(_self as AnyObject).autorelease().toOpaque()
+        }
+        """,
+      ]
+    )
+  }
+
+  // MARK: - Multi-argument subscript
+
+  @Test
+  func multiArgSubscript_kotlin() throws {
+    try assertOutput(
+      input: """
+        public class Matrix {
+          public init() {}
+          public subscript(row: Int, col: Int) -> Double { get { 0 } set {} }
+        }
+        """,
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        operator fun get(row: Long, col: Long): Double {
+          return swiftjava_SwiftModule_Matrix_subscript_kn_get(row, col, __ptr())
+        }
+        """,
+        """
+        operator fun set(row: Long, col: Long, newValue: Double) {
+          swiftjava_SwiftModule_Matrix_subscript_kn_set(row, col, newValue, __ptr())
+        }
+        """,
+      ]
+    )
+  }
+
+  @Test
+  func multiArgSubscript_getterThunk_swift() throws {
+    try assertOutput(
+      input: """
+        public class Matrix {
+          public init() {}
+          public subscript(row: Int, col: Int) -> Double { get { 0 } set {} }
+        }
+        """,
+      .kotlinNative,
+      .swift,
+      expectedChunks: [
+        """
+        public func swiftjava_SwiftModule_Matrix_subscript_kn_get(_ row: Int, _ col: Int, _ self: UnsafeRawPointer) -> Double {
+          return (Unmanaged<AnyObject>.fromOpaque(self).takeUnretainedValue() as! Matrix)[row, col]
+        }
+        """,
+      ]
+    )
+  }
+
+  // MARK: - Read-only subscript
+
+  @Test
+  func readOnlySubscript_noSetter_kotlin() throws {
+    try assertOutput(
+      input: """
+        public class IntBox {
+          public init() {}
+          public subscript(index: Int) -> Int { 0 }
+        }
+        """,
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        operator fun get(index: Long): Long {
+          return swiftjava_SwiftModule_IntBox_subscript_kn_get(index, __ptr())
+        }
+        """,
+      ],
+      notExpectedChunks: [
+        "operator fun set",
       ]
     )
   }
