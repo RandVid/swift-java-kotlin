@@ -1,5 +1,9 @@
 package com.example.kotlinnative
 
+import com.example.kotlinnative.cinterop.swiftjava_SimpleSwiftLib_Counter_init_start
+import kotlinx.cinterop.interpretObjCPointer
+import platform.darwin.NSObject
+
 /**
  * Demo application showing Kotlin/Native calling Swift directly via cinterop.
  *
@@ -68,6 +72,16 @@ fun main() {
     println("\n14. Calling function with UInt64 parameters and return:")
     val ulongSum = addUInt64(1_000_000_000uL, 2_000_000_000uL)
     println("   addUInt64(1_000_000_000, 2_000_000_000) = $ulongSum")
+
+    printMessage("aboba")
+    val a = swiftjava_SimpleSwiftLib_Counter_init_start(5L)
+    printMessage("aboba")
+    val ahahah = a!!
+    printMessage("aboba")
+    val b = ahahah.rawValue
+    printMessage("aboba")
+    val c = interpretObjCPointer<NSObject>(b)
+    printMessage("aboba")
 
     println("\n=== All Kotlin/Native -> Swift cinterop calls successful! ===")
 }
