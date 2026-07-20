@@ -57,7 +57,7 @@ extension KotlinNativeSwift2KotlinGenerator {
     // ---- Read-only value class: getters, non-mutating methods, `copy()`. ----
     printer.print("@OptIn(ExperimentalNativeApi::class)")
     printer.print("class \(name) internal constructor(val obj: NSObject) : SwiftCopyable {")
-    printer.print("  internal fun __ptr(): COpaquePointer = interpretCPointer<CPointed>(obj.objcPtr())!!")
+    printer.print("  internal fun __ptr(): NativePtr = obj.objcPtr()")
     for i in inits { printer.print(renderStructConstructor(i)) }
     for p in props { for l in renderStructReadOnlyProperty(p) { printer.print(l) } }
     for m in readOnlyMethods {
@@ -279,7 +279,7 @@ extension KotlinNativeSwift2KotlinGenerator {
         guard let flavor = inoutFlavor(p.type), let kt = swiftTypeToKotlin(p.type) else { return nil }
         let cellVar = "\(name)_cell"
         params.append("\(name): Inout<\(kt)>")
-        args.append("\(cellVar).ptr")
+        args.append("\(cellVar).ptr.rawValue")
         marshals.append(InoutMarshal(paramName: name, cellVar: cellVar, flavor: flavor))
       } else {
         guard let pa = structParamAndArg(p, name: name) else { return nil }
@@ -312,8 +312,8 @@ extension KotlinNativeSwift2KotlinGenerator {
     var lines = ["\(indent)\(prefix)memScoped {"]
     for m in marshals { lines += inoutCellPrologue(m, source: inoutRefSource(m), indent: inner) }
     lines.append("\(inner)val self_slot = alloc<COpaquePointerVar>()")
-    lines.append("\(inner)self_slot.value = unsafeValue.__ptr()")
-    let callArgs = (leadingArgs + ["self_slot.ptr"]).joined(separator: ", ")
+    lines.append("\(inner)self_slot.value = interpretCPointer<CPointed>(unsafeValue.__ptr())")
+    let callArgs = (leadingArgs + ["self_slot.ptr.rawValue"]).joined(separator: ", ")
     let callExpr = "\(thunk)(\(callArgs))"
     if isVoid {
       lines.append("\(inner)\(callExpr)")
@@ -321,7 +321,7 @@ extension KotlinNativeSwift2KotlinGenerator {
       lines.append(inoutResultCapture(ret: ret, callExpr: callExpr, indent: inner))
     }
     for m in marshals { lines.append("\(inner)\(m.paramName).unsafeValue = \(inoutCellReadBack(m))") }
-    lines.append("\(inner)unsafeValue = \(structName)(wrapSwiftObject { self_slot.value })")
+    lines.append("\(inner)unsafeValue = \(structName)(wrapSwiftObject { self_slot.value!!.rawValue })")
     if !isVoid { lines.append("\(inner)_result") }
     lines.append("\(indent)}")
     return lines

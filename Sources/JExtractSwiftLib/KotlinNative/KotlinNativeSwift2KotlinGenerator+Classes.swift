@@ -90,7 +90,7 @@ extension KotlinNativeSwift2KotlinGenerator {
     // GC fallback: the lambda captures only `__handle` (passed as the cleaner's
     // root), never `this`, so the cleaner can actually run.
 //    printer.print("  private val __cleaner = createCleaner(__handle) { it.destroy() }")
-    printer.print("  internal fun __ptr(): COpaquePointer = interpretCPointer<CPointed>(__obj.objcPtr())!!")
+    printer.print("  internal fun __ptr(): NativePtr = __obj.objcPtr()")
 //    printer.print("  override fun close() = __handle.destroy()")
 
     // Constructors (Swift initializers).
@@ -222,7 +222,7 @@ extension KotlinNativeSwift2KotlinGenerator {
         let kt = swiftTypeToKotlin(p.type)!
         let cellVar = "\(name)_cell"
         paramDecls.append("\(name): Inout<\(kt)>")
-        callArgs.append("\(cellVar).ptr")
+        callArgs.append("\(cellVar).ptr.rawValue")
         marshals.append(InoutMarshal(paramName: name, cellVar: cellVar, flavor: flavor))
       } else {
         let pa = kotlinParamAndArg(p, name: name)!

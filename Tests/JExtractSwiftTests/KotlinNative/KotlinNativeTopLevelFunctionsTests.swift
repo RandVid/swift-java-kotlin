@@ -181,7 +181,7 @@ struct KotlinNativeTopLevelFunctionsTests {
     )
   }
 
-  // MARK: - String parameters (passed as null-terminated UTF-8 via .cstr)
+  // MARK: - String parameters (passed as null-terminated UTF-8 via .objcPtr())
 
   @Test
   func string_asParameter() throws {
@@ -192,7 +192,7 @@ struct KotlinNativeTopLevelFunctionsTests {
       expectedChunks: [
         """
         fun printMessage(message: String): Unit {
-          swiftjava_SwiftModule_printMessage_message(message.cstr)
+          swiftjava_SwiftModule_printMessage_message(message.objcPtr())
         }
         """
       ]
@@ -226,7 +226,7 @@ struct KotlinNativeTopLevelFunctionsTests {
       expectedChunks: [
         """
         fun countChars(s: String): Int {
-          return swiftjava_SwiftModule_countChars_s(s.cstr)
+          return swiftjava_SwiftModule_countChars_s(s.objcPtr())
         }
         """
       ]
@@ -242,7 +242,7 @@ struct KotlinNativeTopLevelFunctionsTests {
       expectedChunks: [
         """
         fun tag(label: String, value: Long): Unit {
-          swiftjava_SwiftModule_tag_label_value(label.cstr, value)
+          swiftjava_SwiftModule_tag_label_value(label.objcPtr(), value)
         }
         """
       ]
@@ -258,14 +258,14 @@ struct KotlinNativeTopLevelFunctionsTests {
       expectedChunks: [
         """
         fun log(prefix: String, message: String): Unit {
-          swiftjava_SwiftModule_log_prefix_message(prefix.cstr, message.cstr)
+          swiftjava_SwiftModule_log_prefix_message(prefix.objcPtr(), message.objcPtr())
         }
         """
       ]
     )
   }
 
-  // MARK: - String return (thunk returns heap-allocated char*; wrapper copies then frees)
+  // MARK: - String return (thunk returns an autoreleased NSString box; wrapper reads it via interpretObjCPointer)
 
   @Test
   func string_asReturn() throws {
@@ -276,10 +276,7 @@ struct KotlinNativeTopLevelFunctionsTests {
       expectedChunks: [
         """
         fun makeGreeting(): String {
-          val ptr = swiftjava_SwiftModule_makeGreeting() ?: return ""
-          val result = ptr.toKString()
-          free(ptr)
-          return result
+          return autoreleasepool { interpretObjCPointer<String>(swiftjava_SwiftModule_makeGreeting()) }
         }
         """
       ]
@@ -295,10 +292,7 @@ struct KotlinNativeTopLevelFunctionsTests {
       expectedChunks: [
         """
         fun greet(name: String): String {
-          val ptr = swiftjava_SwiftModule_greet_name(name.cstr) ?: return ""
-          val result = ptr.toKString()
-          free(ptr)
-          return result
+          return autoreleasepool { interpretObjCPointer<String>(swiftjava_SwiftModule_greet_name(name.objcPtr())) }
         }
         """
       ]
@@ -314,10 +308,7 @@ struct KotlinNativeTopLevelFunctionsTests {
       expectedChunks: [
         """
         fun intToString(value: Long): String {
-          val ptr = swiftjava_SwiftModule_intToString_value(value) ?: return ""
-          val result = ptr.toKString()
-          free(ptr)
-          return result
+          return autoreleasepool { interpretObjCPointer<String>(swiftjava_SwiftModule_intToString_value(value)) }
         }
         """
       ]
@@ -325,20 +316,26 @@ struct KotlinNativeTopLevelFunctionsTests {
   }
 
   @Test
-  func string_asReturn_importsFree() throws {
+  func string_asReturn_usesInterpretObjCPointer() throws {
+    // The String return is read back from the autoreleased NSString box with
+    // interpretObjCPointer; no C-string free() is involved.
     try assertOutput(
       input: "public func makeGreeting() -> String { \"hi\" }",
       .kotlinNative,
       .java,
       expectedChunks: [
-        "import platform.posix.free"
+        "return autoreleasepool { interpretObjCPointer<String>(swiftjava_SwiftModule_makeGreeting()) }"
+      ],
+      notExpectedChunks: [
+        "import platform.posix.free",
+        "toKString",
       ]
     )
   }
 
   @Test
-  func string_asReturn_importsToKString() throws {
-    // toKString lives in kotlinx.cinterop which is wildcard-imported.
+  func string_asReturn_importsKotlinxCinterop() throws {
+    // interpretObjCPointer / memScoped live in kotlinx.cinterop, still wildcard-imported.
     try assertOutput(
       input: "public func makeGreeting() -> String { \"hi\" }",
       .kotlinNative,
@@ -350,14 +347,53 @@ struct KotlinNativeTopLevelFunctionsTests {
   }
 
   @Test
-  func string_primitiveOnly_doesNotImportFree() throws {
-    // When no function returns String, platform.posix.free must not be imported.
+  func string_primitiveOnly_doesNotImportPosixFree() throws {
+    // platform.posix.free is no longer imported in any mode (strings use NSString).
     try assertOutput(
       input: "public func add(a: Int, b: Int) -> Int { a + b }",
       .kotlinNative,
       .java,
       expectedChunks: [
         "fun add(a: Long, b: Long): Long {"
+      ]
+    )
+  }
+
+  // MARK: - @ImportedBridge externals (direct binding, no cinterop klib)
+
+  @Test
+  func importedBridge_primitiveExtern() throws {
+    // Each Swift @_cdecl thunk is bound directly as an `external fun` annotated with
+    // `@ImportedBridge`, replacing the cinterop `.def`/klib. Primitives map 1:1.
+    try assertOutput(
+      input: "public func addInts(a: Int32, b: Int32) -> Int32 { a + b }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        @ImportedBridge("swiftjava_SwiftModule_addInts_a_b")
+        external fun swiftjava_SwiftModule_addInts_a_b(p0: Int, p1: Int): Int
+        """
+      ],
+      notExpectedChunks: [
+        "import com.example.swift.cinterop.*",
+      ]
+    )
+  }
+
+  @Test
+  func importedBridge_stringExtern_usesNativePtr() throws {
+    // String params/returns cross as NSString boxes, so the extern signature is all
+    // `NativePtr` (a `void*`), not a C string.
+    try assertOutput(
+      input: "public func echo(message: String) -> String { message }",
+      .kotlinNative,
+      .java,
+      expectedChunks: [
+        """
+        @ImportedBridge("swiftjava_SwiftModule_echo_message")
+        external fun swiftjava_SwiftModule_echo_message(p0: NativePtr): NativePtr
+        """
       ]
     )
   }
@@ -753,7 +789,7 @@ struct KotlinNativeTopLevelFunctionsTests {
           memScoped {
             val value_cell = alloc<LongVar>()
             value_cell.value = value.unsafeValue
-            swiftjava_SwiftModule_addInPlace_value_by(value_cell.ptr, amount)
+            swiftjava_SwiftModule_addInPlace_value_by(value_cell.ptr.rawValue, amount)
             value.unsafeValue = value_cell.value
           }
         }
@@ -792,8 +828,8 @@ struct KotlinNativeTopLevelFunctionsTests {
         fun replace(str: Inout<String>, rep: String): Unit {
           memScoped {
             val str_cell = alloc<CPointerVar<ByteVar>>()
-            str_cell.value = str.unsafeValue.cstr
-            swiftjava_SwiftModule_replace_str_rep(str_cell.ptr, rep.cstr)
+            str_cell.value = str.unsafeValue.objcPtr()
+            swiftjava_SwiftModule_replace_str_rep(str_cell.ptr.rawValue, rep.objcPtr())
             str.unsafeValue = str_cell.value
           }
         }
@@ -846,7 +882,7 @@ struct KotlinNativeTopLevelFunctionsTests {
           return memScoped {
             val x_cell = alloc<IntVar>()
             x_cell.value = x.unsafeValue
-            val _result = swiftjava_SwiftModule_bump__(x_cell.ptr)
+            val _result = swiftjava_SwiftModule_bump__(x_cell.ptr.rawValue)
             x.unsafeValue = x_cell.value
             _result
           }
@@ -891,7 +927,7 @@ struct KotlinNativeTopLevelFunctionsTests {
             a_cell.value = a.unsafeValue
             val b_cell = alloc<LongVar>()
             b_cell.value = b.unsafeValue
-            swiftjava_SwiftModule_swapAdd_a_b(a_cell.ptr, b_cell.ptr)
+            swiftjava_SwiftModule_swapAdd_a_b(a_cell.ptr.rawValue, b_cell.ptr.rawValue)
             a.unsafeValue = a_cell.value
             b.unsafeValue = b_cell.value
           }
@@ -917,9 +953,9 @@ struct KotlinNativeTopLevelFunctionsTests {
         fun move(p: Inout<Point>): Unit {
           memScoped {
             val p_cell = alloc<COpaquePointerVar>()
-            p_cell.value = p.unsafeValue.__ptr()
-            swiftjava_SwiftModule_move_p(p_cell.ptr)
-            p.unsafeValue = Point(wrapSwiftObject { p_cell.value })
+            p_cell.value = interpretCPointer<CPointed>(p.unsafeValue.__ptr())
+            swiftjava_SwiftModule_move_p(p_cell.ptr.rawValue)
+            p.unsafeValue = Point(wrapSwiftObject { p_cell.value!!.rawValue })
           }
         }
         """
@@ -966,9 +1002,9 @@ struct KotlinNativeTopLevelFunctionsTests {
         fun replace(p: Inout<Point>): Point {
           return memScoped {
             val p_cell = alloc<COpaquePointerVar>()
-            p_cell.value = p.unsafeValue.__ptr()
-            val _result = Point(wrapSwiftObject { swiftjava_SwiftModule_replace_p(p_cell.ptr) })
-            p.unsafeValue = Point(wrapSwiftObject { p_cell.value })
+            p_cell.value = interpretCPointer<CPointed>(p.unsafeValue.__ptr())
+            val _result = Point(wrapSwiftObject { swiftjava_SwiftModule_replace_p(p_cell.ptr.rawValue) })
+            p.unsafeValue = Point(wrapSwiftObject { p_cell.value!!.rawValue })
             _result
           }
         }
@@ -1050,13 +1086,10 @@ struct KotlinNativeTopLevelFunctionsTests {
         """
         var greeting: String
             get() {
-                val ptr = swiftjava_SwiftModule_greeting_kn_get() ?: return ""
-                val result = ptr.toKString()
-                free(ptr)
-                return result
+                return autoreleasepool { interpretObjCPointer<String>(swiftjava_SwiftModule_greeting_kn_get()) }
             }
             set(value) {
-                swiftjava_SwiftModule_greeting_kn_set(value.cstr)
+                swiftjava_SwiftModule_greeting_kn_set(value.objcPtr())
             }
         """
       ]

@@ -16,7 +16,7 @@ The jextract tool supports four generation modes (see `JExtractGenerationMode.sw
 - **FFM (Foreign Function & Memory)** - Modern JDK 25+ approach with high performance (default)
 - **JNI (Java Native Interface)** - Legacy compatibility for older JDKs and Android
 - **Kotlin** (`kotlin`) - Generates Kotlin source that **delegates to the generated Java FFM bindings** (JVM target). Primitive types only.
-- **Kotlin/Native** (`kotlinNative`) - NEW: Generates Kotlin/Native source that calls the Swift `@_cdecl` C thunks **directly via cinterop, with no JVM / Java FFM layer**. The most actively developed mode — supports primitives, String, and custom class/struct types.
+- **Kotlin/Native** (`kotlinNative`) - NEW: Generates Kotlin/Native source that calls the Swift `@_cdecl` C thunks **directly via `@ImportedBridge` externals (no cinterop klib), with no JVM / Java FFM layer**. The most actively developed mode — supports primitives, String, and custom class/struct types. **Requires Kotlin 2.4.20-Beta1+** (`@ImportedBridge` / `NativePtr` are `kotlin.native.internal` APIs introduced then).
 
 ## Prerequisites
 
@@ -35,6 +35,10 @@ sdk install java 25.0.1-amzn
 sdk use java 25.0.1-amzn
 export JAVA_HOME="$(sdk home java current)"
 ```
+
+**Kotlin**: 2.4.20-Beta1+ (centralized in `settings.gradle.kts` `pluginManagement`). Required by the
+`kotlinNative` mode, whose `@ImportedBridge` transport uses `kotlin.native.internal` APIs introduced
+in that release. The bump applies to every Kotlin module (all samples + `SwiftKitKN`).
 
 **Critical**: Always set `JAVA_HOME` environment variable. Alternative: create `~/.java_home` file containing the path.
 
@@ -91,7 +95,7 @@ swift run swift-java jextract \
   --java-package com.example.mymodule \
   --mode kotlin
 
-# Generate Kotlin/Native bindings (direct cinterop to Swift @_cdecl thunks, no JVM)
+# Generate Kotlin/Native bindings (direct @ImportedBridge calls to Swift @_cdecl thunks, no JVM)
 swift run swift-java jextract \
   --swift-module MyModule \
   --input-swift path/to/swift/sources \
@@ -99,8 +103,9 @@ swift run swift-java jextract \
   --output-java path/to/generated/kotlin \
   --java-package com.example.mymodule \
   --mode kotlinNative
-# In kotlinNative mode --output-java holds the .kt wrapper + Swift thunks,
-# and --output-swift holds the plain-C header consumed by the cinterop .def file.
+# In kotlinNative mode --output-java holds the .kt wrapper (incl. the @ImportedBridge
+# extern declarations) + the Swift thunks. --output-swift is currently unused (no
+# cinterop C header is emitted); the flag is still accepted for compatibility.
 ```
 
 ### Benchmarks
@@ -130,18 +135,30 @@ AnalysisResult (intermediate representation - shared by all backends)
 │            │            │                 │                      │
 FFMGenerator JNIGenerator KotlinGenerator   KotlinNativeGenerator
 │            │            │                 │
-Java (FFM)   Java (JNI)   Kotlin → Java FFM  Kotlin/Native + C header + Swift @_cdecl thunks
+Java (FFM)   Java (JNI)   Kotlin → Java FFM  Kotlin/Native (@ImportedBridge) + Swift @_cdecl thunks
 ```
 
-**Kotlin/Native backend (`KotlinNativeSwift2KotlinGenerator`)** emits **three** artifacts from a
-single resolved model, all of which must agree on the C ABI:
-1. **Kotlin wrapper** — `<Module>.kt`: the functions the app calls; wildcard-imports the cinterop package.
-2. **C header** — `<Module>.h`: plain-C declarations consumed by the cinterop `.def` (written to `--output-swift`). A clean header is emitted rather than the SwiftPM `<Module>-Swift.h` (whose `external_source_symbol` pragmas make cinterop skip the thunks).
-3. **Swift thunks** — `<Module>Module+SwiftJava.swift`: `@_cdecl` functions compiled into the Swift dynamic library.
+**Kotlin/Native backend (`KotlinNativeSwift2KotlinGenerator`)** emits **two** artifacts from a
+single resolved model, which must agree on the C ABI:
+1. **Kotlin wrapper** — `<Module>.kt`: the functions the app calls, PLUS a block of
+   `@ImportedBridge("<symbol>") external fun <symbol>(…): …` declarations that bind each Swift
+   `@_cdecl` thunk symbol directly (no cinterop `.def`/klib). Emitted by `printImportedBridgeExterns`.
+2. **Swift thunks** — `<Module>Module+SwiftJava.swift`: `@_cdecl` functions compiled into the Swift
+   dynamic library; the final Kotlin/Native binary link resolves the extern symbols against it.
 
-The C ABI for thunks is lowered via the **shared FFM `CType`/`CFunction` machinery** (same source
-of truth as FFM's Java `FunctionDescriptor`), except for custom class/struct returns, which use a
-box-allocating thunk returning an opaque `void*` (see `.claude/ClassImpl.md`).
+There is **no C header / cinterop step** anymore. The extern signatures are still derived from the
+**shared FFM `CType`/`CFunction` machinery** (same source of truth as FFM's Java `FunctionDescriptor`):
+every C pointer (object/String box, `inout` cell, out-param) maps to `kotlin.native.internal.NativePtr`,
+primitives map 1:1 (`kotlinExternType`). Custom class/struct returns use a box-allocating thunk
+returning an opaque `void*` (see `.claude/ClassImpl.md`). Strings cross as ObjC `NSString` boxes
+(`objcPtr()`/`interpretObjCPointer<String>` on the Kotlin side; `Unmanaged<NSString>` in the thunk),
+not C strings.
+
+**Opt-in:** `@ImportedBridge` / `NativePtr` live in `kotlin.native.internal`, whose marker
+`InternalForKotlinNative` is itself `internal` and therefore **cannot** be named in a source
+`@OptIn(...)`. The consuming Kotlin/Native module must pass the compiler flag
+`-opt-in=kotlin.native.internal.InternalForKotlinNative` (plus `kotlinx.cinterop.ExperimentalForeignApi`
+for the marshalling helpers). The sample sets both via `compilerOptions.optIn`.
 
 ### Key Source Structure
 
@@ -158,7 +175,7 @@ Sources/
 │   ├── JNI/                # JNI code generator (~8 files)
 │   ├── Kotlin/             # Kotlin-JVM generator: KotlinSwift2KotlinGenerator.swift + KotlinType.swift
 │   └── KotlinNative/       # Kotlin/Native generator (4 files, ACTIVE)
-│       ├── KotlinNativeSwift2KotlinGenerator.swift             # resolve()/wrapper + C header emission
+│       ├── KotlinNativeSwift2KotlinGenerator.swift             # resolve()/wrapper + @ImportedBridge externs
 │       ├── KotlinNativeSwift2KotlinGenerator+Classes.swift    # class/struct wrapper emission
 │       ├── KotlinNativeSwift2KotlinGenerator+SwiftThunkPrinting.swift  # @_cdecl thunks + dispatch
 │       └── KotlinType.swift                                    # KotlinType enum (primitives, object)
@@ -182,7 +199,7 @@ SwiftKitKN/                # Kotlin/Native runtime library (macOS arm64); export
 Samples/                   # Example applications (integration tests)
 ├── SwiftJavaExtractFFMSampleApp/  # Java FFM sample
 ├── KotlinFFMSampleApp/           # Kotlin (JVM) FFM delegation sample
-└── KotlinNativeSampleApp/        # Kotlin/Native direct-cinterop sample (macOS arm64, NEW)
+└── KotlinNativeSampleApp/        # Kotlin/Native @ImportedBridge sample (macOS arm64, NEW)
 ```
 
 ### Type System Architecture
@@ -235,14 +252,17 @@ including `.object(String)` for custom class/struct wrappers):
 ### Kotlin/Native Code Generation (`kotlinNative` mode, ACTIVE area of work)
 
 This is the most actively developed generator. Unlike `kotlin` (JVM) mode, it produces **no JVM
-layer**: generated Kotlin/Native wrappers call the Swift `@_cdecl` C thunks directly through cinterop.
+layer**: generated Kotlin/Native wrappers call the Swift `@_cdecl` C thunks directly through
+`@ImportedBridge` externals (no cinterop klib; requires Kotlin 2.4.20-Beta1+ and the
+`-opt-in=kotlin.native.internal.InternalForKotlinNative` compiler flag).
 
 **Current Status:**
 - Top-level functions over a broad type set: all signed/unsigned integer widths, `Bool`, `Float`,
   `Double`, and `String` (params **and** returns).
 - **Custom classes & structs** (`KotlinNative/KotlinNativeSwift2KotlinGenerator+Classes.swift`):
-  each Swift nominal type becomes a Kotlin wrapper class holding an opaque `COpaquePointer` to a
-  Swift-allocated box (Option B / Swift-malloc delegation — see `.claude/ClassImpl.md`). Supports
+  each Swift nominal type becomes a Kotlin wrapper class holding an `NSObject` box over a
+  Swift-allocated object; `__ptr(): NativePtr = __obj.objcPtr()` yields the handle passed to the
+  externs (Option B / Swift-malloc delegation — see `.claude/ClassImpl.md`). Supports
   constructors, instance methods, static methods, and stored-property get/set, plus custom types as
   parameters and return values. Member parameter/return types are limited to primitives, `String`,
   and other custom types.
@@ -303,16 +323,16 @@ layer**: generated Kotlin/Native wrappers call the Swift `@_cdecl` C thunks dire
     is not surfaced (only `mutating` ones are); `String` returns from an `inout`/`mutating` function are
     still skipped (custom-type and scalar returns are supported).
   - Build caveat: the sample's Swift dylib is compiled from the SwiftPM build-plugin thunk output
-    (`.build/plugins/outputs/…`), which is **not** invalidated when the `swift-java` generator itself
-    changes — a stale copy there produces an ABI skew against the freshly regenerated cinterop header
-    (e.g. a setter's `self` compiled as a read-only `void*` while cinterop expects the mutable
-    `void* self_cell`), which crashes at runtime. After changing the generator, wipe
-    `Samples/KotlinNativeSampleApp/.build` before rebuilding.
+    (`.build/plugins/outputs/…`), which is **not** reliably invalidated when the `swift-java` generator
+    itself changes — a stale copy there produces an ABI skew against the freshly regenerated
+    `@ImportedBridge` externs (e.g. a thunk still returning `char*` while the extern/wrapper now expect
+    an `NSString`/`NativePtr`), which fails to link or crashes at runtime. After changing the generator,
+    wipe `Samples/KotlinNativeSampleApp/.build` before rebuilding.
 - Tests: `KotlinNativeTopLevelFunctionsTests.swift` and `KotlinNativeClassTests.swift` (incl. `inout`,
   struct mutating methods/setters). Sample `macosArm64Test` exercises all `inout` shapes end-to-end.
 - Sample project: `Samples/KotlinNativeSampleApp` (macOS arm64 / `macosArm64`), depends on
   `SwiftKitKN` for `SwiftHandle`/`Inout`/`SwiftCopyable`; `ci-validate.sh` and `macosArm64Test` integration tests
-  (including a `Counter` class and `Point` struct exercised end-to-end through cinterop).
+  (including a `Counter` class and `Point` struct exercised end-to-end through `@ImportedBridge`).
 
 **Detailed design docs (in `.claude/`):**
 - `ClassImpl.md` — class/struct bridging across FFM/JNI/KN, the allocation tradeoff (host-allocates
@@ -355,9 +375,11 @@ layer**: generated Kotlin/Native wrappers call the Swift `@_cdecl` C thunks dire
 1. Modify `AnalysisResult.swift` if new IR representation needed
 2. Update `Swift2JavaTranslator.swift` for Swift AST analysis
 3. Implement in specific generator (`FFMSwift2JavaGenerator.swift`, `JNISwift2JavaGenerator.swift`, `KotlinSwift2KotlinGenerator.swift`, or `KotlinNativeSwift2KotlinGenerator.swift`)
-   - For `kotlinNative`, remember the three artifacts must stay in sync: the `.kt` wrapper
-     (`writeExportedKotlinSources`/`printKotlinFunction`), the C header (`resolve()`/`writeCinteropHeader`),
+   - For `kotlinNative`, remember the two artifacts must stay in sync: the `.kt` wrapper +
+     `@ImportedBridge` externs (`writeExportedKotlinSources`/`printKotlinFunction`/`printImportedBridgeExterns`)
      and the Swift `@_cdecl` thunks (`writeSwiftThunkSources` in the `+SwiftThunkPrinting.swift` file).
+     Both derive their C ABI from the same resolved `CFunction`s (`kotlinExternType` maps them to the
+     extern signatures), so the symbol names and ABI match.
 4. Add tests to corresponding test file in `Tests/JExtractSwiftTests/`
 5. Update sample app if integration testing required
 
@@ -386,8 +408,17 @@ When adding support for a new type:
 ### Java/Kotlin Output Reuses `--output-java` and `--java-package`
 The Kotlin modes currently reuse these flags rather than having separate `--kotlin-output` and
 `--kotlin-package` options. In `kotlinNative` mode specifically, `--output-java` receives the `.kt`
-wrapper and the Swift `@_cdecl` thunks, while `--output-swift` receives the plain-C cinterop header
-(the `.def` file's `headers =` target).
+wrapper (including the `@ImportedBridge` extern declarations) and the Swift `@_cdecl` thunks.
+`--output-swift` is currently unused — no cinterop C header is emitted — but the flag is still
+accepted for compatibility.
+
+### Kotlin/Native Requires Kotlin 2.4.20-Beta1+ and an Internal Opt-In
+The `@ImportedBridge` / `NativePtr` transport is only available from Kotlin **2.4.20-Beta1**. The
+plugin version is centralized in `settings.gradle.kts` `pluginManagement` (bumping it upgrades every
+Kotlin module — sibling samples must share one plugin classloader, so it is all-or-nothing; do not
+pin a version in an individual sample's `build.gradle.kts`). The consuming module must also compile
+with `-opt-in=kotlin.native.internal.InternalForKotlinNative` (that marker is `internal`, so a source
+`@OptIn(...)` cannot express it) and `-opt-in=kotlinx.cinterop.ExperimentalForeignApi`.
 
 ### Kotlin/Native Requires the Mode in `swift-java.config`
 When the SwiftPM plugin drives generation for a Kotlin/Native sample, the config **must** set
@@ -416,7 +447,7 @@ Use these file paths when referencing code locations:
 - [Sources/JExtractSwiftLib/FFM/FFMSwift2JavaGenerator.swift](fleet-file://utdu5g2ng8hqlmm30vu8/Users/ilya.plisko/IdeaProjects/swift-java-kotlin/Sources/JExtractSwiftLib/FFM/FFMSwift2JavaGenerator.swift?type=file&root=%252F)
 - [Sources/JExtractSwiftLib/JNI/JNISwift2JavaGenerator.swift](fleet-file://utdu5g2ng8hqlmm30vu8/Users/ilya.plisko/IdeaProjects/swift-java-kotlin/Sources/JExtractSwiftLib/JNI/JNISwift2JavaGenerator.swift?type=file&root=%252F)
 - [Sources/JExtractSwiftLib/Kotlin/KotlinSwift2KotlinGenerator.swift](fleet-file://utdu5g2ng8hqlmm30vu8/Users/ilya.plisko/IdeaProjects/swift-java-kotlin/Sources/JExtractSwiftLib/Kotlin/KotlinSwift2KotlinGenerator.swift?type=file&root=%252F) - Kotlin (JVM) generator
-- `Sources/JExtractSwiftLib/KotlinNative/KotlinNativeSwift2KotlinGenerator.swift` - Kotlin/Native wrapper + C header
+- `Sources/JExtractSwiftLib/KotlinNative/KotlinNativeSwift2KotlinGenerator.swift` - Kotlin/Native wrapper + @ImportedBridge externs
 - `Sources/JExtractSwiftLib/KotlinNative/KotlinNativeSwift2KotlinGenerator+Classes.swift` - class/struct wrappers
 - `Sources/JExtractSwiftLib/KotlinNative/KotlinNativeSwift2KotlinGenerator+SwiftThunkPrinting.swift` - `@_cdecl` Swift thunks
 - `Sources/JExtractSwiftLib/KotlinNative/KotlinType.swift` - `KotlinType` enum
@@ -436,7 +467,7 @@ Use these file paths when referencing code locations:
 
 **Sample projects:**
 - [Samples/KotlinFFMSampleApp/](fleet-file://utdu5g2ng8hqlmm30vu8/Users/ilya.plisko/IdeaProjects/swift-java-kotlin/Samples/KotlinFFMSampleApp?type=file&root=%252F) - Kotlin (JVM) FFM delegation integration test
-- `Samples/KotlinNativeSampleApp/` - Kotlin/Native direct-cinterop integration test (macOS arm64)
+- `Samples/KotlinNativeSampleApp/` - Kotlin/Native @ImportedBridge integration test (macOS arm64)
 
 **Kotlin/Native runtime library:**
 - `SwiftKitKN/build.gradle.kts` - KMP module declaration (macosArm64, macOS-only in settings)

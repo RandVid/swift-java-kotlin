@@ -21,8 +21,8 @@ pluginManagement {
     // sibling projects yields conflicting KotlinNativeBundleBuildService
     // classloaders.
     plugins {
-        kotlin("jvm") version "2.3.10"
-        kotlin("multiplatform") version "2.3.10"
+        kotlin("jvm") version "2.4.20-Beta1"
+        kotlin("multiplatform") version "2.4.20-Beta1"
     }
 }
 

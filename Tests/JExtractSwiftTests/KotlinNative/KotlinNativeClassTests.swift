@@ -32,7 +32,7 @@ struct KotlinNativeClassTests {
         """
         @OptIn(ExperimentalNativeApi::class)
         class Counter internal constructor(private val __obj: NSObject) {
-          internal fun __ptr(): COpaquePointer = interpretCPointer<CPointed>(__obj.objcPtr())!!
+          internal fun __ptr(): NativePtr = __obj.objcPtr()
         """
       ]
     )
@@ -194,10 +194,7 @@ struct KotlinNativeClassTests {
       expectedChunks: [
         """
         fun greet(name: String): String {
-          val ptr = swiftjava_SwiftModule_Greeter_greet_name(name.cstr, __ptr()) ?: return ""
-          val result = ptr.toKString()
-          free(ptr)
-          return result
+          return autoreleasepool { interpretObjCPointer<String>(swiftjava_SwiftModule_Greeter_greet_name(name.objcPtr(), __ptr())) }
         }
         """
       ]
@@ -349,7 +346,7 @@ struct KotlinNativeClassTests {
       .java,
       expectedChunks: [
         "class Point internal constructor(val obj: NSObject) : SwiftCopyable {",
-        "internal fun __ptr(): COpaquePointer = interpretCPointer<CPointed>(obj.objcPtr())!!",
+        "internal fun __ptr(): NativePtr = obj.objcPtr()",
         """
         fun sum(): Long {
           return swiftjava_SwiftModule_Point_sum(__ptr())
@@ -386,9 +383,9 @@ struct KotlinNativeClassTests {
           set(value) {
             memScoped {
               val self_slot = alloc<COpaquePointerVar>()
-              self_slot.value = unsafeValue.__ptr()
-              swiftjava_SwiftModule_Point_x_kn_set(value, self_slot.ptr)
-              unsafeValue = Point(wrapSwiftObject { self_slot.value })
+              self_slot.value = interpretCPointer<CPointed>(unsafeValue.__ptr())
+              swiftjava_SwiftModule_Point_x_kn_set(value, self_slot.ptr.rawValue)
+              unsafeValue = Point(wrapSwiftObject { self_slot.value!!.rawValue })
             }
           }
         """,
@@ -492,9 +489,9 @@ struct KotlinNativeClassTests {
         fun Inout<Point>.bump() {
           memScoped {
             val self_slot = alloc<COpaquePointerVar>()
-            self_slot.value = unsafeValue.__ptr()
-            swiftjava_SwiftModule_Point_bump(self_slot.ptr)
-            unsafeValue = Point(wrapSwiftObject { self_slot.value })
+            self_slot.value = interpretCPointer<CPointed>(unsafeValue.__ptr())
+            swiftjava_SwiftModule_Point_bump(self_slot.ptr.rawValue)
+            unsafeValue = Point(wrapSwiftObject { self_slot.value!!.rawValue })
           }
         }
         """
@@ -553,9 +550,9 @@ struct KotlinNativeClassTests {
           get() = Inout(unsafeValue.topLeft) { newValue ->
             memScoped {
               val self_slot = alloc<COpaquePointerVar>()
-              self_slot.value = unsafeValue.__ptr()
-              swiftjava_SwiftModule_Rect_topLeft_kn_set(newValue.__ptr(), self_slot.ptr)
-              unsafeValue = Rect(wrapSwiftObject { self_slot.value })
+              self_slot.value = interpretCPointer<CPointed>(unsafeValue.__ptr())
+              swiftjava_SwiftModule_Rect_topLeft_kn_set(newValue.__ptr(), self_slot.ptr.rawValue)
+              unsafeValue = Rect(wrapSwiftObject { self_slot.value!!.rawValue })
             }
           }
         """,
@@ -565,9 +562,9 @@ struct KotlinNativeClassTests {
           field.block()
           memScoped {
             val self_slot = alloc<COpaquePointerVar>()
-            self_slot.value = unsafeValue.__ptr()
-            swiftjava_SwiftModule_Rect_topLeft_kn_set(field.unsafeValue.__ptr(), self_slot.ptr)
-            unsafeValue = Rect(wrapSwiftObject { self_slot.value })
+            self_slot.value = interpretCPointer<CPointed>(unsafeValue.__ptr())
+            swiftjava_SwiftModule_Rect_topLeft_kn_set(field.unsafeValue.__ptr(), self_slot.ptr.rawValue)
+            unsafeValue = Rect(wrapSwiftObject { self_slot.value!!.rawValue })
           }
         }
         """,
@@ -643,9 +640,9 @@ struct KotlinNativeClassTests {
         fun Inout<Counter>.next(): Long {
           return memScoped {
             val self_slot = alloc<COpaquePointerVar>()
-            self_slot.value = unsafeValue.__ptr()
-            val _result = swiftjava_SwiftModule_Counter_next(self_slot.ptr)
-            unsafeValue = Counter(wrapSwiftObject { self_slot.value })
+            self_slot.value = interpretCPointer<CPointed>(unsafeValue.__ptr())
+            val _result = swiftjava_SwiftModule_Counter_next(self_slot.ptr.rawValue)
+            unsafeValue = Counter(wrapSwiftObject { self_slot.value!!.rawValue })
             _result
           }
         }
@@ -702,10 +699,10 @@ struct KotlinNativeClassTests {
             val delta_cell = alloc<LongVar>()
             delta_cell.value = delta.unsafeValue
             val self_slot = alloc<COpaquePointerVar>()
-            self_slot.value = unsafeValue.__ptr()
-            swiftjava_SwiftModule_Point_adjust_delta(delta_cell.ptr, self_slot.ptr)
+            self_slot.value = interpretCPointer<CPointed>(unsafeValue.__ptr())
+            swiftjava_SwiftModule_Point_adjust_delta(delta_cell.ptr.rawValue, self_slot.ptr.rawValue)
             delta.unsafeValue = delta_cell.value
-            unsafeValue = Point(wrapSwiftObject { self_slot.value })
+            unsafeValue = Point(wrapSwiftObject { self_slot.value!!.rawValue })
           }
         }
         """
@@ -762,9 +759,9 @@ struct KotlinNativeClassTests {
         fun Inout<Point>.advance(): Token {
           return memScoped {
             val self_slot = alloc<COpaquePointerVar>()
-            self_slot.value = unsafeValue.__ptr()
-            val _result = Token(wrapSwiftObject { swiftjava_SwiftModule_Point_advance(self_slot.ptr) })
-            unsafeValue = Point(wrapSwiftObject { self_slot.value })
+            self_slot.value = interpretCPointer<CPointed>(unsafeValue.__ptr())
+            val _result = Token(wrapSwiftObject { swiftjava_SwiftModule_Point_advance(self_slot.ptr.rawValue) })
+            unsafeValue = Point(wrapSwiftObject { self_slot.value!!.rawValue })
             _result
           }
         }
@@ -1051,7 +1048,7 @@ struct KotlinNativeClassTests {
           memScoped {
             val x_cell = alloc<LongVar>()
             x_cell.value = x.unsafeValue
-            swiftjava_SwiftModule_Box_scale_x(x_cell.ptr, __ptr())
+            swiftjava_SwiftModule_Box_scale_x(x_cell.ptr.rawValue, __ptr())
             x.unsafeValue = x_cell.value
           }
         }
@@ -1252,9 +1249,9 @@ struct KotlinNativeClassTests {
         operator fun Inout<IntArray>.set(index: Long, newValue: Long) {
           memScoped {
             val self_slot = alloc<COpaquePointerVar>()
-            self_slot.value = unsafeValue.__ptr()
-            swiftjava_SwiftModule_IntArray_subscript_kn_set(index, newValue, self_slot.ptr)
-            unsafeValue = IntArray(wrapSwiftObject { self_slot.value })
+            self_slot.value = interpretCPointer<CPointed>(unsafeValue.__ptr())
+            swiftjava_SwiftModule_IntArray_subscript_kn_set(index, newValue, self_slot.ptr.rawValue)
+            unsafeValue = IntArray(wrapSwiftObject { self_slot.value!!.rawValue })
           }
         }
         """,

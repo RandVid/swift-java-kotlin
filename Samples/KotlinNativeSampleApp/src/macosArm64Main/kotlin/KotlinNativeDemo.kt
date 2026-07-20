@@ -1,18 +1,14 @@
 package com.example.kotlinnative
 
-import com.example.kotlinnative.cinterop.swiftjava_SimpleSwiftLib_Counter_init_start
-import kotlinx.cinterop.interpretObjCPointer
-import platform.darwin.NSObject
-
 /**
- * Demo application showing Kotlin/Native calling Swift directly via cinterop.
+ * Demo application showing Kotlin/Native calling Swift directly.
  *
  * The generated wrappers (helloWorld/add/isPositive/divide) live in this same
- * package and call the Swift @_cdecl C thunks through the cinterop bindings —
- * no JVM and no Java FFM layer involved.
+ * package and call the Swift @_cdecl C thunks through @ImportedBridge externals —
+ * no cinterop klib, no JVM, and no Java FFM layer involved.
  */
 fun main() {
-    println("=== Kotlin/Native cinterop Demo ===\n")
+    println("=== Kotlin/Native -> Swift Demo ===\n")
 
     println("1. Calling void function:")
     helloWorld()
@@ -73,15 +69,5 @@ fun main() {
     val ulongSum = addUInt64(1_000_000_000uL, 2_000_000_000uL)
     println("   addUInt64(1_000_000_000, 2_000_000_000) = $ulongSum")
 
-    printMessage("aboba")
-    val a = swiftjava_SimpleSwiftLib_Counter_init_start(5L)
-    printMessage("aboba")
-    val ahahah = a!!
-    printMessage("aboba")
-    val b = ahahah.rawValue
-    printMessage("aboba")
-    val c = interpretObjCPointer<NSObject>(b)
-    printMessage("aboba")
-
-    println("\n=== All Kotlin/Native -> Swift cinterop calls successful! ===")
+    println("\n=== All Kotlin/Native -> Swift calls successful! ===")
 }
