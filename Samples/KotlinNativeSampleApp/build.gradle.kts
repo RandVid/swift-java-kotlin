@@ -9,13 +9,16 @@ repositories {
     mavenCentral()
 }
 
-// Swift build outputs (the dynamic library + the jextract-generated
-// `<Module>-Swift.h` header that cinterop consumes).
+// Swift build outputs (the dynamic library the generated wrappers link against).
 val swiftDebugDir = layout.projectDirectory.dir(".build/arm64-apple-macosx/debug")
-val generatedKotlinDir = layout.buildDirectory.dir("kotlin-native-generated/kotlin")
-// The generator emits a plain-C header for cinterop here (via --output-swift).
-val generatedHeaderDir = layout.projectDirectory.dir(".build/kotlin-native-generated/swift")
-val cinteropDefFile = layout.projectDirectory.file("native/SimpleSwiftLib.def")
+// Keep generated Kotlin out of Gradle's `build/` dir: IntelliJ auto-excludes
+// `build/` from indexing and does not reliably un-exclude generated Kotlin/Native
+// source roots under it, which left the generated symbols unresolved (red) in the
+// editor and killed the test run-gutter icons. `.build/` (already used for the C
+// header and git-ignored) is indexed normally once registered as a source dir.
+val generatedKotlinDir = layout.projectDirectory.dir(".build/kotlin-native-generated/kotlin")
+// The `--output-swift` directory.
+val generatedSwiftDir = layout.projectDirectory.dir(".build/kotlin-native-generated/swift")
 
 // The root-built swift-java CLI (built by `swift build` at the repo root,
 // e.g. via ci-validate.sh).
@@ -41,7 +44,7 @@ val swiftBuild = tasks.register<Exec>("swiftBuild") {
 }
 
 // 2. Generate the Kotlin/Native wrappers (kotlinNative mode). These call the
-//    @_cdecl C thunks directly through the cinterop bindings.
+//    @_cdecl C thunks directly through @ImportedBridge externals (no cinterop klib).
 val generateKotlinNativeBindings = tasks.register<Exec>("generateKotlinNativeBindings") {
     description = "Generate Kotlin/Native bindings using jextract --mode kotlinNative"
     workingDir = rootDir
@@ -51,57 +54,46 @@ val generateKotlinNativeBindings = tasks.register<Exec>("generateKotlinNativeBin
         "--swift-module", "SimpleSwiftLib",
         "--input-swift", "Samples/KotlinNativeSampleApp/Sources/SimpleSwiftLib",
         "--output-swift", "Samples/KotlinNativeSampleApp/.build/kotlin-native-generated/swift",
-        "--output-java", "Samples/KotlinNativeSampleApp/build/kotlin-native-generated/kotlin",
+        "--output-java", "Samples/KotlinNativeSampleApp/.build/kotlin-native-generated/kotlin",
         "--java-package", "com.example.kotlinnative",
         "--mode", "kotlinNative"
     )
     inputs.dir("Sources/SimpleSwiftLib")
+    // Re-run generation when the swift-java tool itself changes, otherwise Gradle
+    // treats the task as up-to-date and reuses stale wrappers after a tool rebuild.
+    inputs.file(swiftJavaTool)
     outputs.dir(generatedKotlinDir)
-    outputs.dir(generatedHeaderDir)
+    outputs.dir(generatedSwiftDir)
     dependsOn(buildRootProject)
 }
 
-// 3. Write the cinterop .def with absolute paths resolved by Gradle. The
-//    Swift runtime dylibs (libSwiftJava, libSwiftRuntimeFunctions) live next
-//    to libSimpleSwiftLib in the SPM debug dir; libswiftCore is in /usr/lib/swift.
-val generateCinteropDef = tasks.register("generateCinteropDef") {
-    description = "Generate the cinterop .def for SimpleSwiftLib"
-    val def = cinteropDefFile.asFile
-    val debug = swiftDebugDir.asFile
-    val include = generatedHeaderDir.asFile
-    outputs.file(def)
-    dependsOn(swiftBuild, generateKotlinNativeBindings)
-    doLast {
-        def.parentFile.mkdirs()
-        // Bind against the generator-produced plain-C header (SimpleSwiftLib.h),
-        // not the SwiftPM <Module>-Swift.h: the latter marks the thunks with
-        // external_source_symbol(language="Swift"), so cinterop skips them.
-        def.writeText(
-            """
-            package = com.example.kotlinnative.cinterop
-            headers = SimpleSwiftLib.h
-            compilerOpts = -I${include}
-            linkerOpts = -L${debug} -lSimpleSwiftLib -L/usr/lib/swift -rpath ${debug} -rpath /usr/lib/swift
-            """.trimIndent() + "\n"
-        )
-    }
+// The Swift @_cdecl thunk symbols are bound directly with `@ImportedBridge` in the
+// generated Kotlin wrappers (no cinterop `.def`/klib). The final Kotlin/Native
+// binary link resolves them against libSimpleSwiftLib, so the link flags that used
+// to live in the `.def` now live on the target's binaries (see `binaries.all`).
+val swiftLinkerOpts = swiftDebugDir.asFile.absolutePath.let { debug ->
+    listOf("-L", debug, "-lSimpleSwiftLib", "-L", "/usr/lib/swift", "-rpath", debug, "-rpath", "/usr/lib/swift")
 }
 
 kotlin {
     macosArm64 {
-        compilations.getByName("main") {
-            cinterops {
-                create("SimpleSwiftLib") {
-                    definitionFile.set(cinteropDefFile)
-                }
-            }
-        }
         compilations.all {
-            // cinterop bindings are an experimental API; opt in build-wide so
-            // the generated wrappers and tests don't need per-call annotations.
+            // Opt in build-wide so the generated wrappers and tests don't need
+            // per-call annotations:
+            //  - ExperimentalForeignApi: kotlinx.cinterop (memScoped/objcPtr/…).
+            //  - InternalForKotlinNative: @ImportedBridge / NativePtr. Its marker is
+            //    `internal`, so it can only be opted in via this -opt-in= flag, never
+            //    a source @OptIn(...) — the generated wrappers rely on this.
             compileTaskProvider.configure {
                 compilerOptions.optIn.add("kotlinx.cinterop.ExperimentalForeignApi")
+                compilerOptions.optIn.add("kotlin.experimental.ExperimentalNativeApi")
+                compilerOptions.optIn.add("kotlin.native.internal.InternalForKotlinNative")
             }
+        }
+        // Every macosArm64 binary (the demo executable AND the test executable)
+        // links directly against the Swift dynamic library.
+        binaries.all {
+            linkerOpts(swiftLinkerOpts)
         }
         // Runnable demo. Produces runDebugExecutableMacosArm64 (aliased as `run`).
         binaries {
@@ -114,6 +106,9 @@ kotlin {
     sourceSets {
         val macosArm64Main by getting {
             kotlin.srcDir(generatedKotlinDir)
+            dependencies {
+                implementation(project(":SwiftKitKN"))
+            }
         }
         val macosArm64Test by getting {
             dependencies {
@@ -121,15 +116,18 @@ kotlin {
             }
         }
     }
+    sourceSets.macosArm64Test.dependencies {
+        implementation(kotlin("test"))
+    }
 }
 
-// Task wiring: the cinterop step needs the dylib + header + .def; the Kotlin
-// compilation needs the generated wrappers.
-tasks.matching { it.name.startsWith("cinterop") }.configureEach {
-    dependsOn(swiftBuild, generateKotlinNativeBindings, generateCinteropDef)
-}
+// Task wiring: the Kotlin compilation needs the generated wrappers, and the link
+// step needs the Swift dynamic library.
 tasks.matching { it.name == "compileKotlinMacosArm64" }.configureEach {
     dependsOn(generateKotlinNativeBindings)
+}
+tasks.matching { it.name.startsWith("link") && it.name.contains("MacosArm64") }.configureEach {
+    dependsOn(swiftBuild)
 }
 
 // Convenience alias so the demo runs like the KotlinFFM sample's `run`:

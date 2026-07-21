@@ -68,6 +68,9 @@ enum ConversionStep: Equatable {
   /// Call a method with provided parameters.
   indirect case method(base: String?, methodName: String?, arguments: [LabeledArgument<ConversionStep>])
 
+  /// Cast the target to a type, rendered as `(<target>) as <type>`.
+  indirect case cast(ConversionStep, type: String)
+
   indirect case optionalChain(ConversionStep)
 
   /// Count the number of times that the placeholder occurs within this
@@ -79,7 +82,7 @@ enum ConversionStep: Equatable {
       .typedPointer(let inner, swiftType: _),
       .unsafeCastPointer(let inner, swiftType: _),
       .populatePointer(name: _, assumingType: _, to: let inner),
-      .member(let inner, member: _), .optionalChain(let inner):
+      .member(let inner, member: _), .cast(let inner, type: _), .optionalChain(let inner):
       inner.placeholderCount
     case .initialize(_, let arguments):
       arguments.reduce(0) { $0 + $1.argument.placeholderCount }
@@ -125,6 +128,10 @@ enum ConversionStep: Equatable {
     case .pointee(let step):
       let untypedExpr = step.asExprSyntax(placeholder: placeholder, bodyItems: &bodyItems)
       return "\(untypedExpr).pointee"
+
+    case .cast(let step, let type):
+      let inner = step.asExprSyntax(placeholder: placeholder, bodyItems: &bodyItems)
+      return "(\(inner)) as \(raw: type)"
 
     case .initialize(let type, let arguments):
       let renderedArguments: [String] = arguments.map { labeledArgument in

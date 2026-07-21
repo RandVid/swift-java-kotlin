@@ -17,7 +17,9 @@ import utilities.registerJextractTask
 
 plugins {
     id("build-logic.java-application-conventions")
-    kotlin("jvm") version "2.3.10"
+    // Version comes from settings.gradle.kts pluginManagement (centralized so sibling
+    // Kotlin samples share one plugin classloader); pinning it here conflicts.
+    kotlin("jvm")
 }
 
 group = "org.swift.swiftkit"
