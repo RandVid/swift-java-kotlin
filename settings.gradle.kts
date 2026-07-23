@@ -79,6 +79,7 @@ val ffmModules = setOf(
 // macosArm64 + cinterop, which require the macOS SDK and konan toolchain).
 val macosOnlyModules = setOf(
     "KotlinNativeSampleApp",
+    "KotlinNativeStructStressApp",
 )
 val isMacOS = System.getProperty("os.name").startsWith("Mac")
 

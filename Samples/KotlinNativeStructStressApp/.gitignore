@@ -1,0 +1,7 @@
+.build/
+build/
+.gradle/
+.DS_Store
+# Generated sources (produced by gen.py)
+Sources/StressLib/StressLib.swift
+src/macosArm64Main/kotlin/Driver.kt
